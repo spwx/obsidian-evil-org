@@ -41,7 +41,7 @@ Obsidian has no public API for its Vim mode, so the plugin changes the Vim engin
 
 ## Development
 
-`main.js` is the source; there is no build step. The end-to-end tests run it against a real CodeMirror 6 editor with [codemirror-vim](https://github.com/replit/codemirror-vim) in jsdom:
+`main.js` is the source; `npm run build` only syntax-checks it, so the released file is byte-for-byte the one in the repo. The end-to-end tests run it against a real CodeMirror 6 editor with [codemirror-vim](https://github.com/replit/codemirror-vim) in jsdom:
 
 ```sh
 npm install

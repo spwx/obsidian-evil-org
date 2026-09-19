@@ -1,9 +1,10 @@
 {
   "name": "obsidian-evil-org",
   "private": true,
-  "description": "Dev-only: end-to-end tests for the Evil Org Obsidian plugin. The plugin itself is main.js, with no build step.",
+  "description": "Dev-only: end-to-end tests for the Evil Org Obsidian plugin. The plugin itself is main.js, hand-written, so the build only syntax-checks it.",
   "license": "MIT",
   "scripts": {
+    "build": "node --check main.js",
     "test": "node test/e2e.cjs"
   },
   "devDependencies": {

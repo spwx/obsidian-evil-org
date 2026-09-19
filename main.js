@@ -76,11 +76,14 @@ function headingLevels(doc) {
 function collectHeadings(state) {
   const out = [];
   const levels = headingLevels(state.doc);
+  // The shallowest level present is top: a note may start at ## when its file
+  // name serves as the title.
+  const top = levels.reduce((min, l) => (l && l < min ? l : min), Infinity);
   for (let i = 1; i <= state.doc.lines; i++) {
     if (!levels[i]) continue;
     const line = state.doc.line(i);
     const range = foldable(state, line.from, line.to);
-    if (range) out.push({ top: levels[i] === 1, range });
+    if (range) out.push({ top: levels[i] === top, range });
   }
   return out;
 }

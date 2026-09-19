@@ -171,7 +171,7 @@ test("Vd on a folded heading deletes the subtree", async () => {
   assert.equal(text(v), "# A\na\n## D\nd");
 });
 
-// --- dd at the end of the note ------------------------------------------------
+// --- deleting at the end of the note -----------------------------------------
 
 test("dd on a folded section at the end leaves no blank line", async () => {
   const v = open(DOC);
@@ -215,6 +215,63 @@ test("cc on a folded section at the end keeps a line to type on", async () => {
   gotoLine(v, 7);
   await keys(v, "cc");
   assert.equal(text(v), "# A\na\n## B\nb\n### C\nc\n");
+});
+
+test("Vd on a folded section at the end leaves no blank line", async () => {
+  const v = open(DOC);
+  fold(v, 7);
+  fold(v, 3);
+  gotoLine(v, 7);
+  await keys(v, "Vd");
+  assert.equal(text(v), "# A\na\n## B\nb\n### C\nc");
+  assert.deepEqual(foldedLines(v), [3]);
+  assert.equal(v.state.doc.lineAt(v.state.selection.main.head).number, 3);
+  await keys(v, "u");
+  assert.equal(text(v), DOC);
+});
+
+test("Vx, VD and VX over the last lines leave no blank line", async () => {
+  for (const op of ["x", "D", "X"]) {
+    const v = open(DOC);
+    gotoLine(v, 7);
+    await keys(v, "VG" + op);
+    assert.equal(text(v), "# A\na\n## B\nb\n### C\nc", `V${op}`);
+  }
+});
+
+test("Vd at the end then p puts the lines back", async () => {
+  const v = open(DOC);
+  gotoLine(v, 6);
+  await keys(v, "VGd");
+  assert.equal(text(v), "# A\na\n## B\nb\n### C");
+  await keys(v, "p");
+  assert.equal(text(v), DOC);
+});
+
+test("2dd over the last lines of a note ending in a newline", async () => {
+  const v = open("# A\na\nb\n");
+  gotoLine(v, 3);
+  await keys(v, "2dd");
+  assert.equal(text(v), "# A\na");
+});
+
+test(". repeats dd at the end", async () => {
+  const v = open(DOC);
+  fold(v, 7);
+  gotoLine(v, 7);
+  await keys(v, "dd.");
+  assert.equal(text(v), "# A\na\n## B\nb\n### C");
+});
+
+test("dw, d$ and dd in the middle delete as usual", async () => {
+  const v = open("# A\none two\nb");
+  gotoLine(v, 2);
+  await keys(v, "dw");
+  assert.equal(text(v), "# A\ntwo\nb");
+  await keys(v, "d$");
+  assert.equal(text(v), "# A\n\nb");
+  await keys(v, "dd");
+  assert.equal(text(v), "# A\nb");
 });
 
 // --- >> / << ----------------------------------------------------------------
@@ -289,13 +346,23 @@ test(">> and << on a body line still indent", async () => {
   assert.equal(text(v), DOC);
 });
 
-// Must run last: it unloads the plugin.
+// Must run last: these unload the plugin.
 test("after unload, >> on a heading indents as stock vim does", async () => {
   plugin.onunload();
   const v = open(DOC);
   gotoLine(v, 3);
   await keys(v, ">>");
   assert.match(v.state.doc.line(3).text, /^\s+## B$/);
+});
+
+test("after unload, d deletes as stock vim does", async () => {
+  const v = open(DOC);
+  gotoLine(v, 8);
+  await keys(v, "dd");
+  assert.equal(text(v), "# A\na\n## B\nb\n### C\nc\n## D");
+  gotoLine(v, 6);
+  await keys(v, "VGd");
+  assert.equal(text(v), "# A\na\n## B\nb\n### C\n");
 });
 
 (async () => {

@@ -258,7 +258,7 @@ function foldRanges(view, ranges) {
 const plainExpandToLine = (_cm, head, args) => new head.constructor(head.line + args.repeat - 1, Infinity);
 
 function foldAwareExpandToLine(original) {
-  const expand = function (cm, head, args, ...rest) {
+  return function (cm, head, args, ...rest) {
     const view = cm && cm.cm6;
     if (!view) return original.call(this, cm, head, args, ...rest);
     const doc = view.state.doc;
@@ -271,55 +271,76 @@ function foldAwareExpandToLine(original) {
     }
     return new head.constructor(line - 1, Infinity);
   };
-  return function (cm, head, args, vim, inputState, ...rest) {
-    const end = expand.call(this, cm, head, args, vim, inputState, ...rest);
-    const view = cm && cm.cm6;
-    if (view && inputState && inputState.operator === "delete") {
-      const doc = view.state.doc;
-      if (head.line > 0 && end.line + 1 >= doc.lines) {
-        endDelete = { doc, from: doc.line(head.line + 1).from };
-        queueMicrotask(() => { endDelete = null; });
+}
+
+const firstNonBlank = (text) => text.length - text.trimStart().length;
+
+// The stock `delete` operator as it runs on CodeMirror 6 (vim's operator
+// table isn't exposed, so it can't be wrapped).
+function stockDelete(Vim) {
+  return function (cm, args, ranges) {
+    const vim = cm.state.vim;
+    const Pos = ranges[0].anchor.constructor;
+    let text, head;
+    if (!vim.visualBlock) {
+      let from = ranges[0].anchor;
+      const to = ranges[0].head;
+      // `dd` on the last line also deletes the newline before it.
+      if (args.linewise && to.line !== cm.firstLine() && from.line === cm.lastLine() && from.line === to.line - 1) {
+        from = from.line === cm.firstLine() ? new Pos(from.line, 0) : new Pos(from.line - 1, cm.getLine(from.line - 1).length);
       }
+      text = cm.getRange(from, to);
+      cm.replaceRange("", from, to);
+      head = args.linewise ? new Pos(from.line, firstNonBlank(cm.getLine(from.line))) : from;
+    } else {
+      text = cm.getSelection();
+      cm.replaceSelections(ranges.map(() => ""));
+      const { anchor, head: h } = ranges[0];
+      head = h.line < anchor.line || (h.line === anchor.line && h.ch < anchor.ch) ? h : anchor;
     }
-    return end;
+    Vim.getRegisterController().pushText(args.registerName, "delete", text, args.linewise, vim.visualBlock);
+    const line = Math.min(Math.max(cm.firstLine(), head.line), cm.lastLine());
+    const maxCh = cm.getLine(line).length - 1 + (vim.insertMode || vim.visualMode ? 1 : 0);
+    return new Pos(line, Math.min(Math.max(0, head.ch), maxCh));
   };
 }
 
-// Vim's `dd` on the last line also deletes the newline before it, so no empty
-// line is left at the end of the note. codemirror-vim does this only for a
-// single line, so for a closed fold or `3dd` the expandToLine motion notes
-// where the deleted lines start and this filter extends the deletion. Vim then
-// sets the cursor on the new last line; that goes to its first non-blank, or,
-// if the line is in a closed fold, to the fold's heading so the fold stays
+// `d` (and `x`, `X`, `D` in visual mode). Vim's linewise delete at the end of
+// the note also deletes the newline before the lines, so no empty line is left
+// behind; codemirror-vim does this only for a single line, not for a closed
+// fold, `3dd` or `Vd`. The cursor goes to the new last line's first non-blank,
+// or, if that line is in a closed fold, to the fold's heading so the fold stays
 // closed (CodeMirror opens a fold the cursor enters).
-let endDelete = null;
-
-function deleteNewlineBeforeEnd(tr) {
-  const pending = endDelete;
-  if (!pending) return tr;
-  if (pending.cursor !== undefined) {
-    if (tr.docChanged || !tr.selection) return tr;
-    endDelete = null;
-    return [tr, { selection: EditorSelection.cursor(pending.cursor) }];
-  }
-  if (!tr.docChanged) return tr;
-  endDelete = null;
-  const doc = tr.startState.doc;
-  if (doc !== pending.doc) return tr;
-  let exact = true;
-  let count = 0;
-  tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
-    count++;
-    if (fromA !== pending.from || toA !== doc.length || inserted.length > 0) exact = false;
-  });
-  if (!exact || count !== 1) return tr;
-  const end = pending.from - 1;
-  const outer = allFolds(tr.startState)
-    .filter((f) => f.from < end && f.to >= end)
-    .sort((a, b) => a.from - b.from)[0];
-  const line = doc.lineAt(outer ? outer.from : end);
-  endDelete = { cursor: line.from + line.text.length - line.text.trimStart().length };
-  return [tr, { changes: { from: end, to: pending.from }, sequential: true }];
+function orgDelete(Vim) {
+  const stock = stockDelete(Vim);
+  return function (cm, args, ranges) {
+    const { anchor, head } = ranges[0];
+    const forward = anchor.line < head.line || (anchor.line === head.line && anchor.ch <= head.ch);
+    const start = forward ? anchor : head;
+    const end = forward ? head : anchor;
+    // Linewise ranges end at the start of the line after the last one.
+    const last = end.ch === 0 && end.line > start.line ? end.line - 1 : end.line;
+    if (!args.linewise || cm.state.vim.visualBlock || ranges.length > 1 || start.line === 0 || last < cm.lastLine()) {
+      return stock(cm, args, ranges);
+    }
+    const state = cm.cm6.state;
+    const doc = state.doc;
+    const prev = doc.line(start.line); // 1-based: the line before the deleted ones
+    const outer = allFolds(state)
+      .filter((f) => f.from < prev.to && f.to >= prev.to)
+      .sort((a, b) => a.from - b.from)[0];
+    const target = outer ? doc.lineAt(outer.from) : prev;
+    const text = doc.sliceString(doc.line(start.line + 1).from);
+    const Pos = anchor.constructor;
+    const lastLine = cm.lastLine();
+    cm.replaceRange("", new Pos(start.line - 1, prev.length), new Pos(lastLine, cm.getLine(lastLine).length));
+    Vim.getRegisterController().pushText(args.registerName, "delete", text, true, false);
+    const cursor = new Pos(target.number - 1, firstNonBlank(target.text));
+    // Leaving visual mode, vim first puts the cursor at the selection's head.
+    const vim = cm.state.vim;
+    if (vim.visualMode) vim.sel.head = cursor;
+    return cursor;
+  };
 }
 
 // Motion run by `p`/`P` just before the paste action. With a linewise
@@ -379,7 +400,7 @@ function stockIndent(cm, args, ranges) {
   }
   const doc = cm.cm6.state.doc;
   const line = doc.line(operatorLines(doc, cm, ranges[0]).first);
-  return new ranges[0].anchor.constructor(line.number - 1, line.text.length - line.text.trimStart().length);
+  return new ranges[0].anchor.constructor(line.number - 1, firstNonBlank(line.text));
 }
 
 // `>`/`<` (and `>>`, `3<<`, `V>`) on headings: promote/demote instead of
@@ -442,6 +463,17 @@ module.exports = class EvilOrgPlugin extends Plugin {
     Vim.defineOperator("orgIndent", orgIndent);
     Vim.mapCommand(">", "operator", "orgIndent", { indentRight: true });
     Vim.mapCommand("<", "operator", "orgIndent", { indentRight: false });
+    // `d` shadows the stock delete operator the same way. In visual mode `x`,
+    // `X` and `D` delete with it too.
+    Vim.defineOperator("orgDelete", orgDelete(Vim));
+    Vim.mapCommand("d", "operator", "orgDelete", {});
+    Vim.mapCommand("D", "operator", "orgDelete", { linewise: true }, { context: "visual" });
+    for (const [key, forward, visualLine] of [["x", true, false], ["X", false, true]]) {
+      Vim.mapCommand(key, "operatorMotion", null, undefined, {
+        operator: "orgDelete", motion: "moveByCharacters", motionArgs: { forward },
+        operatorMotionArgs: { visualLine }, context: "visual",
+      });
+    }
     this.patchedVim = Vim;
     this.restoreVim = () => {
       Vim.defineMotion("expandToLine", original);
@@ -449,6 +481,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
       Vim.defineMotion("orgPasteAfter", (_cm, head) => head);
       Vim.defineMotion("orgPasteBefore", (_cm, head) => head);
       Vim.defineOperator("orgIndent", stockIndent);
+      Vim.defineOperator("orgDelete", stockDelete(Vim));
     };
   }
 
@@ -481,7 +514,6 @@ module.exports = class EvilOrgPlugin extends Plugin {
         ])
       ),
       EditorState.transactionFilter.of((tr) => keepSelectedFoldsClosed(tr, this.app)),
-      EditorState.transactionFilter.of(deleteNewlineBeforeEnd),
       EditorView.updateListener.of((update) => {
         if (!update.selectionSet || !visualLineMode(update.view, this.app)) return;
         if (!foldExtendedSelection(update.state)) return;

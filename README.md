@@ -37,7 +37,7 @@ Manually: download `main.js` and `manifest.json` from the [latest release](https
 
 ## How it works, and a caveat
 
-Obsidian has no public API for its Vim mode, so the plugin changes the Vim engine that Obsidian exposes at `window.CodeMirrorAdapter.Vim`. It redefines the `expandToLine` motion so it is fold-aware, and it maps `p`, `P`, `>` and `<`. It also reads the CodeMirror 6 view through `editor.cm`. Both are undocumented, so an Obsidian update could break the plugin. Unloading the plugin restores stock Vim behaviour.
+Obsidian has no public API for its Vim mode, so the plugin changes the Vim engine that Obsidian exposes at `window.CodeMirrorAdapter.Vim`. It redefines the `expandToLine` motion so it is fold-aware, and it maps `p`, `P`, `d`, `>` and `<` (plus `x`, `X` and `D` in visual mode). It also reads the CodeMirror 6 view through `editor.cm`. Both are undocumented, so an Obsidian update could break the plugin. Unloading the plugin restores stock Vim behaviour.
 
 ## Development
 

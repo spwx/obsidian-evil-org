@@ -32,6 +32,7 @@ class Plugin {
   constructor(app) { this.app = app; this.extensions = []; this.commands = []; }
   registerEditorExtension(ext) { this.extensions.push(ext); }
   registerEvent() {}
+  registerDomEvent(el, type, fn, options) { el.addEventListener(type, fn, options); }
   addCommand(cmd) { this.commands.push(cmd); }
 }
 class MarkdownView {}
@@ -395,6 +396,245 @@ test(">> and << on a body line still indent", async () => {
   assert.equal(text(v), DOC);
 });
 
+// --- M-j / M-k ----------------------------------------------------------------
+
+const cursorLine = (view) => view.state.doc.lineAt(view.state.selection.main.head).number;
+
+test("M-j swaps a subtree with the next sibling, M-k swaps it back", async () => {
+  const v = open(DOC);
+  gotoLine(v, 3);
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "# A\na\n## D\nd\n## B\nb\n### C\nc");
+  assert.equal(cursorLine(v), 5);
+  await keys(v, "<A-k>");
+  assert.equal(text(v), DOC);
+  assert.equal(cursorLine(v), 3);
+});
+
+test("M-j and M-k stop at the last sibling and the parent", async () => {
+  const v = open(DOC);
+  gotoLine(v, 7);
+  await keys(v, "<A-j>");
+  gotoLine(v, 3);
+  await keys(v, "<A-k>");
+  gotoLine(v, 5);
+  await keys(v, "<A-j><A-k>");
+  gotoLine(v, 1);
+  await keys(v, "<A-j><A-k>");
+  assert.equal(text(v), DOC);
+});
+
+test("M-j keeps moved subtrees folded", async () => {
+  const v = open(DOC);
+  fold(v, 7);
+  fold(v, 5);
+  fold(v, 3);
+  gotoLine(v, 3);
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "# A\na\n## D\nd\n## B\nb\n### C\nc");
+  assert.deepEqual(foldedLines(v), [3, 5, 7]);
+  assert.equal(cursorLine(v), 5);
+});
+
+test("M-j keeps blank lines between subtrees in place", async () => {
+  const v = open("# A\n\n## B\nb\n\n## C\nc\n\n# Z");
+  gotoLine(v, 3);
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "# A\n\n## C\nc\n\n## B\nb\n\n# Z");
+  await keys(v, "<A-k>");
+  assert.equal(text(v), "# A\n\n## B\nb\n\n## C\nc\n\n# Z");
+});
+
+test("M-j with blank lines keeps folds closed through u and <C-r>", async () => {
+  const doc = "# A\n\n## B\nb\n\n## C\nc\n\n# Z";
+  const v = open(doc);
+  fold(v, 6);
+  fold(v, 3);
+  gotoLine(v, 3);
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "# A\n\n## C\nc\n\n## B\nb\n\n# Z");
+  assert.deepEqual(foldedLines(v), [3, 6]);
+  await keys(v, "u");
+  assert.equal(text(v), doc);
+  assert.deepEqual(foldedLines(v), [3, 6]);
+  await keys(v, "<C-r>");
+  assert.equal(text(v), "# A\n\n## C\nc\n\n## B\nb\n\n# Z");
+  assert.deepEqual(foldedLines(v), [3, 6]);
+});
+
+test("M-j re-closes folds that run over trailing blank lines", async () => {
+  // Obsidian's heading folds may take in trailing blank lines; lang-markdown's don't.
+  const doc = "## B\nb\n\n## C\nc\n\n# Z";
+  const v = open(doc);
+  const d = v.state.doc;
+  v.dispatch({ effects: [
+    foldEffect.of({ from: d.line(1).to, to: d.line(3).to }),
+    foldEffect.of({ from: d.line(4).to, to: d.line(6).to }),
+  ] });
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "## C\nc\n\n## B\nb\n\n# Z");
+  assert.deepEqual(foldedLines(v), [1, 4]);
+  await keys(v, "u");
+  assert.equal(text(v), doc);
+  assert.deepEqual(foldedLines(v), [1, 4]);
+});
+
+// macOS Option-j: the key is "∆", the code "KeyJ". Obsidian's Vim would read
+// it as plain `j`, so the event must not reach the editor's own handlers.
+function optionKey(view, letter) {
+  const event = new window.KeyboardEvent("keydown", {
+    key: letter === "j" ? "∆" : "˚", code: letter === "j" ? "KeyJ" : "KeyK",
+    altKey: true, bubbles: true, cancelable: true,
+  });
+  let reached = false;
+  const spy = () => { reached = true; };
+  view.contentDOM.addEventListener("keydown", spy);
+  view.contentDOM.dispatchEvent(event);
+  view.contentDOM.removeEventListener("keydown", spy);
+  event.reachedEditor = reached;
+  return event;
+}
+
+test("an Option-j keydown moves the subtree, with a count", async () => {
+  const v = open("## A\n## B\n## C\n## D");
+  const event = optionKey(v, "j");
+  await tick();
+  assert.ok(event.defaultPrevented);
+  assert.ok(!event.reachedEditor);
+  assert.equal(text(v), "## B\n## A\n## C\n## D");
+  await keys(v, "2");
+  optionKey(v, "j");
+  await tick();
+  assert.equal(text(v), "## B\n## C\n## D\n## A");
+  optionKey(v, "k");
+  await tick();
+  assert.equal(text(v), "## B\n## C\n## A\n## D");
+  await keys(v, ".");
+  assert.equal(text(v), "## B\n## A\n## C\n## D");
+});
+
+test("an Option-j keydown in insert mode is left alone", async () => {
+  const v = open("## A\n## B");
+  await keys(v, "i");
+  const event = optionKey(v, "j");
+  await tick();
+  assert.ok(event.reachedEditor);
+  assert.equal(text(v), "## A\n## B");
+});
+
+test("a count moves past that many siblings", async () => {
+  const v = open("## A\n## B\n## C\n## D");
+  await keys(v, "2<A-j>");
+  assert.equal(text(v), "## B\n## C\n## A\n## D");
+  await keys(v, "5<A-j>");
+  assert.equal(text(v), "## B\n## C\n## D\n## A");
+});
+
+test(". repeats M-j and u undoes it in one step, folds and all", async () => {
+  const v = open("## A\na\n## B\nb\n## C\nc");
+  fold(v, 1);
+  gotoLine(v, 1);
+  await keys(v, "<A-j>.");
+  assert.equal(text(v), "## B\nb\n## C\nc\n## A\na");
+  assert.deepEqual(foldedLines(v), [5]);
+  await keys(v, "u");
+  assert.equal(text(v), "## B\nb\n## A\na\n## C\nc");
+  assert.deepEqual(foldedLines(v), [3]);
+  await keys(v, "u");
+  assert.equal(text(v), "## A\na\n## B\nb\n## C\nc");
+  assert.deepEqual(foldedLines(v), [1]);
+});
+
+test("# lines in a code block don't end a subtree", async () => {
+  const v = open("## A\n```sh\n# comment\n```\n## B\nb");
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "## B\nb\n## A\n```sh\n# comment\n```");
+});
+
+test("M-j on a body line moves the line, over a folded heading as one line", async () => {
+  const v = open(DOC);
+  fold(v, 7);
+  gotoLine(v, 6);
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "# A\na\n## B\nb\n### C\n## D\nd\nc");
+  assert.equal(cursorLine(v), 8);
+  gotoLine(v, 2);
+  await keys(v, "<A-k>");
+  assert.equal(text(v), "a\n# A\n## B\nb\n### C\n## D\nd\nc");
+});
+
+// --- ar / ir -------------------------------------------------------------------
+
+test("dar deletes the subtree around the cursor, dir its body", async () => {
+  let v = open(DOC);
+  gotoLine(v, 4);
+  await keys(v, "dar");
+  assert.equal(text(v), "# A\na\n## D\nd");
+  v = open(DOC);
+  gotoLine(v, 3);
+  await keys(v, "dir");
+  assert.equal(text(v), "# A\na\n## B\n## D\nd");
+});
+
+test("ar takes trailing blank lines, ir leaves blank lines around the body", async () => {
+  let v = open("## B\n\nb\n\n## D");
+  await keys(v, "dar");
+  assert.equal(text(v), "## D");
+  v = open("## B\n\nb\n\n## D");
+  await keys(v, "dir");
+  assert.equal(text(v), "## B\n\n\n## D");
+});
+
+test("d2ar deletes the parent subtree, d3ar the grandparent's", async () => {
+  let v = open(DOC + "\n# Z");
+  gotoLine(v, 6);
+  await keys(v, "d2ar");
+  assert.equal(text(v), "# A\na\n## D\nd\n# Z");
+  v = open(DOC + "\n# Z");
+  gotoLine(v, 6);
+  await keys(v, "d3ar");
+  assert.equal(text(v), "# Z");
+});
+
+test("dar at the end of the note leaves no blank line", async () => {
+  const v = open(DOC);
+  gotoLine(v, 8);
+  await keys(v, "dar");
+  assert.equal(text(v), "# A\na\n## B\nb\n### C\nc");
+});
+
+test("dir on a heading without a body does nothing", async () => {
+  const v = open("## A\n## B\nb");
+  await keys(v, "dir");
+  assert.equal(text(v), "## A\n## B\nb");
+});
+
+test("yar then p pastes the subtree folded", async () => {
+  const v = open(DOC);
+  gotoLine(v, 7);
+  await keys(v, "yarGp");
+  assert.equal(text(v), DOC + "\n## D\nd");
+  assert.deepEqual(foldedLines(v), [9]);
+});
+
+test(">ar demotes every heading in an open subtree", async () => {
+  const v = open(DOC);
+  gotoLine(v, 4);
+  await keys(v, ">ar");
+  assert.equal(text(v), "# A\na\n### B\nb\n#### C\nc\n## D\nd");
+});
+
+test("var selects the subtree, ar again the parent", async () => {
+  let v = open(DOC + "\n# Z");
+  gotoLine(v, 6);
+  await keys(v, "vard");
+  assert.equal(text(v), "# A\na\n## B\nb\n## D\nd\n# Z");
+  v = open(DOC + "\n# Z");
+  gotoLine(v, 6);
+  await keys(v, "vararard");
+  assert.equal(text(v), "# Z");
+});
+
 // Must run last: these unload the plugin.
 test("after unload, >> on a heading indents as stock vim does", async () => {
   plugin.onunload();
@@ -412,6 +652,13 @@ test("after unload, d deletes as stock vim does", async () => {
   gotoLine(v, 6);
   await keys(v, "VGd");
   assert.equal(text(v), "# A\na\n## B\nb\n### C\n");
+});
+
+test("after unload, M-j and dar do nothing", async () => {
+  const v = open(DOC);
+  gotoLine(v, 3);
+  await keys(v, "<A-j>dar");
+  assert.equal(text(v), DOC);
 });
 
 (async () => {

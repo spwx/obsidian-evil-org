@@ -456,6 +456,167 @@ function orgIndent(cm, args, ranges) {
   return new ranges[0].anchor.constructor(first - 1, 0);
 }
 
+const isBlank = (text) => text.trim() === "";
+
+// Heading level of each line (levels[n] for 1-based line n), 0 for lines that
+// aren't headings. `#` lines in front matter or fenced code blocks don't count.
+function headingLevels(doc) {
+  const levels = [0];
+  let close = null;
+  for (let i = 1; i <= doc.lines; i++) {
+    const text = doc.line(i).text;
+    if (close) {
+      if (close.test(text)) close = null;
+      levels.push(0);
+      continue;
+    }
+    const fence = text.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (fence) close = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}\\s*$`);
+    else if (i === 1 && text === "---") close = /^(---|\.\.\.)\s*$/;
+    levels.push(close ? 0 : headingLevel(text));
+  }
+  return levels;
+}
+
+// Last line of the section of the heading on line h: up to the next heading of
+// the same or a higher level, with or without trailing blank lines.
+function sectionEnd(doc, levels, h, withBlank) {
+  let last = h;
+  for (let i = h + 1; i <= doc.lines; i++) {
+    if (levels[i] && levels[i] <= levels[h]) break;
+    if (withBlank || !isBlank(doc.line(i).text)) last = i;
+  }
+  return last;
+}
+
+// The heading whose section contains line n, then its ancestors, innermost first.
+function enclosingHeadings(levels, n) {
+  const out = [];
+  let h = n;
+  while (h >= 1 && !levels[h]) h--;
+  while (h >= 1) {
+    out.push(h);
+    let p = h - 1;
+    while (p >= 1 && !(levels[p] && levels[p] < levels[h])) p--;
+    h = p;
+  }
+  return out;
+}
+
+// `ar`/`ir` text objects. `ar` is the subtree of the heading the cursor is
+// under, heading included, plus trailing blank lines; `ir` is its body without
+// the heading or leading and trailing blank lines. A count, or repeating `ar`
+// in visual mode, takes in the enclosing subtrees.
+function subtreeTextObject(cm, head, motionArgs, vim) {
+  const doc = cm.cm6.state.doc;
+  const levels = headingLevels(doc);
+  const inner = !!motionArgs.textObjectInner;
+  const headings = enclosingHeadings(levels, head.line + 1);
+  let selFirst = Infinity, selLast = -Infinity;
+  if (vim.visualMode) {
+    selFirst = Math.min(vim.sel.anchor.line, vim.sel.head.line) + 1;
+    selLast = Math.max(vim.sel.anchor.line, vim.sel.head.line) + 1;
+  }
+  let range = null;
+  for (let i = Math.min((motionArgs.repeat || 1), headings.length) - 1; i < headings.length; i++) {
+    const h = headings[i];
+    let first = inner ? h + 1 : h;
+    const last = sectionEnd(doc, levels, h, !inner);
+    while (inner && first <= last && isBlank(doc.line(first).text)) first++;
+    if (first > last) break;
+    range = { first, last };
+    if (!(first >= selFirst && last <= selLast)) break;
+  }
+  if (!range) return null;
+  const Pos = head.constructor;
+  if (vim.visualMode) vim.visualLine = true;
+  else motionArgs.linewise = true;
+  return [new Pos(range.first - 1, 0), new Pos(range.last - 1, 0)];
+}
+
+// org-move-subtree-down/up (M-↓/M-↑): swap the subtree under the cursor with
+// the next or previous `count` sibling subtrees, keeping the blank lines
+// between them where they were and closed folds closed. On other lines move
+// the line (with the closed fold on it) past `count` lines, a closed fold
+// counting as one line.
+function moveSubtree(view, forward, count) {
+  const state = view.state;
+  const doc = state.doc;
+  const folds = allFolds(state);
+  const levels = headingLevels(doc);
+  const cursor = state.selection.main.head;
+  const n = doc.lineAt(cursor).number;
+  const level = levels[n];
+  const a1 = n;
+  const a2 = level ? sectionEnd(doc, levels, n, false) : doc.lineAt(foldedLineEnd(doc, folds, doc.line(n).from)).number;
+  let b1 = 0, b2 = 0;
+  if (forward) {
+    for (let end = a2, c = 0; c < count; c++) {
+      let next = end + 1;
+      while (level && next <= doc.lines && isBlank(doc.line(next).text)) next++;
+      if (next > doc.lines || (level && levels[next] !== level)) break;
+      end = level ? sectionEnd(doc, levels, next, false) : doc.lineAt(foldedLineEnd(doc, folds, doc.line(next).from)).number;
+      if (!b1) b1 = next;
+      b2 = end;
+    }
+  } else {
+    for (let start = a1, c = 0; c < count; c++) {
+      let prev = start - 1;
+      if (level) {
+        while (prev >= 1 && !(levels[prev] && levels[prev] <= level)) prev--;
+        if (prev < 1 || levels[prev] !== level) break;
+      } else {
+        if (prev < 1) break;
+        const pos = doc.line(prev).from;
+        for (const f of folds) if (f.from < pos && f.to >= pos) prev = Math.min(prev, doc.lineAt(f.from).number);
+      }
+      if (!b2) {
+        b2 = a1 - 1;
+        while (b2 > prev && isBlank(doc.line(b2).text)) b2--;
+      }
+      b1 = start = prev;
+    }
+  }
+  if (!b1) return false;
+
+  const [first, second] = forward ? [[a1, a2], [b1, b2]] : [[b1, b2], [a1, a2]];
+  const from = doc.line(first[0]).from;
+  const firstEnd = doc.line(first[1]).to;
+  const secondStart = doc.line(second[0]).from;
+  const to = doc.line(second[1]).to;
+  // Replace through the end of any fold that starts in the range, so every
+  // such fold is dropped whole (and restored by undo) and can be re-closed.
+  const inside = folds.filter((f) => f.from >= from && f.from <= to);
+  const replaceTo = Math.max(to, ...inside.map((f) => f.to));
+  const firstText = doc.sliceString(from, firstEnd);
+  const gap = doc.sliceString(firstEnd, secondStart);
+  const secondText = doc.sliceString(secondStart, to);
+  const insert = secondText + gap + firstText + doc.sliceString(to, replaceTo);
+  const secondShift = from - secondStart;
+  const firstShift = secondText.length + gap.length;
+  const shiftA = forward ? firstShift : secondShift;
+
+  const headingFolds = [];
+  const otherFolds = [];
+  for (const f of inside) {
+    const inFirst = f.from <= firstEnd;
+    const shift = inFirst ? firstShift : secondShift;
+    const partEnd = inFirst ? firstEnd : to;
+    const line = doc.lineAt(f.from);
+    if (levels[line.number] && f.from === line.to) headingFolds.push(line.from + shift);
+    else otherFolds.push({ from: f.from + shift, to: Math.min(f.to, partEnd) + shift });
+  }
+  view.dispatch({
+    changes: { from, to: replaceTo, insert },
+    selection: { anchor: cursor + shiftA },
+    scrollIntoView: true,
+    userEvent: "move.line",
+  });
+  const next = view.state;
+  foldRanges(view, [...headingFolds.map((pos) => sectionRange(next, next.doc.lineAt(pos))), ...otherFolds]);
+  return true;
+}
+
 module.exports = class EvilOrgPlugin extends Plugin {
   installVimOverrides() {
     const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
@@ -486,15 +647,50 @@ module.exports = class EvilOrgPlugin extends Plugin {
         operatorMotionArgs: { visualLine }, context: "visual",
       });
     }
+    // M-j / M-k move the subtree (org M-↓ / M-↑). On macOS vim reads
+    // Option-j as <A-j> too.
+    Vim.defineAction("orgMoveSubtree", (cm, args) => {
+      if (cm.cm6) moveSubtree(cm.cm6, args.forward, args.repeat || 1);
+    });
+    Vim.mapCommand("<A-j>", "action", "orgMoveSubtree", { forward: true }, { context: "normal", isEdit: true });
+    Vim.mapCommand("<A-k>", "action", "orgMoveSubtree", { forward: false }, { context: "normal", isEdit: true });
+    // `ar`/`ir` shadow vim's `a<register>`/`i<register>` text objects for `r`,
+    // which vim leaves undefined.
+    Vim.defineMotion("orgSubtree", subtreeTextObject);
+    Vim.mapCommand("ar", "motion", "orgSubtree", {});
+    Vim.mapCommand("ir", "motion", "orgSubtree", { textObjectInner: true });
     this.patchedVim = Vim;
     this.restoreVim = () => {
       Vim.defineMotion("expandToLine", original);
+      Vim.defineAction("orgMoveSubtree", () => {});
+      Vim.defineMotion("orgSubtree", () => null);
       // Keymap entries can't be removed, so make them behave like the stock ones.
       Vim.defineMotion("orgPasteAfter", (_cm, head) => head);
       Vim.defineMotion("orgPasteBefore", (_cm, head) => head);
       Vim.defineOperator("orgIndent", stockIndent);
       Vim.defineOperator("orgDelete", stockDelete(Vim));
     };
+  }
+
+  // Obsidian's Vim drops the Alt modifier on macOS, so Option-j reaches it as
+  // plain `j`. Catch Alt-j/Alt-k before any editor handler sees them and give
+  // vim <A-j>/<A-k> directly, which keeps counts and `.` working.
+  handleAltMove(e) {
+    if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const key = e.code === "KeyJ" || e.key === "j" ? "<A-j>" : e.code === "KeyK" || e.key === "k" ? "<A-k>" : null;
+    const Vim = this.patchedVim;
+    if (!key || !Vim) return;
+    const md = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const view = md && md.editor ? md.editor.cm : null;
+    if (!view || !view.dom.contains(e.target)) return;
+    const cm = view.cm;
+    const vim = cm && cm.state && cm.state.vim;
+    if (!vim || vim.insertMode || vim.visualMode || vim.inputState.operator) return;
+    // A pending count is kept in the key buffer.
+    if (!/^\d*$/.test(vim.inputState.keyBuffer.join(""))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    Vim.handleKey(cm, key, "user");
   }
 
   onunload() {
@@ -506,6 +702,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
     // plugin), so re-check whenever the active editor changes.
     this.app.workspace.onLayoutReady(() => this.installVimOverrides());
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.installVimOverrides()));
+    this.registerDomEvent(document, "keydown", (e) => this.handleAltMove(e), { capture: true });
     const handle = (view, fn) => {
       if (!normalMode(view, this.app)) return false;
       try {
@@ -557,5 +754,17 @@ module.exports = class EvilOrgPlugin extends Plugin {
         if (view) handle(view, globalCycle);
       },
     });
+    for (const [id, name, forward] of [
+      ["move-subtree-down", "Move subtree down (org M-↓)", true],
+      ["move-subtree-up", "Move subtree up (org M-↑)", false],
+    ]) {
+      this.addCommand({
+        id,
+        name,
+        editorCallback: (editor) => {
+          if (editor.cm) moveSubtree(editor.cm, forward, 1);
+        },
+      });
+    }
   }
 };

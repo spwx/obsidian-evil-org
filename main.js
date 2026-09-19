@@ -30,6 +30,26 @@ function normalMode(view, allowCount = false) {
   return allowCount ? /^\d*$/.test(pending) : pending === "";
 }
 
+// Vim isn't in the middle of anything: no visual selection, no operator or
+// keys pending. Insert mode counts as idle, and so does an editor without vim.
+function vimIdle(view) {
+  const v = getVimState(view);
+  return !v || (!v.visualMode && !v.inputState.operator && v.inputState.keyBuffer.length === 0);
+}
+
+// fn, logging instead of throwing: an exception escaping a keymap, command or
+// vim action would abort the key half-way and surface as an Obsidian error.
+function guarded(fn) {
+  return (...args) => {
+    try {
+      return fn(...args);
+    } catch (e) {
+      console.error("Evil Org:", e);
+      return false;
+    }
+  };
+}
+
 function allFolds(state) {
   const out = [];
   const it = foldedRanges(state).iter();
@@ -629,6 +649,14 @@ function moveSubtree(view, forward, count) {
   return true;
 }
 
+// Command ids and names are user-facing: hotkeys are bound to the ids.
+const COMMANDS = [
+  ["cycle-local", "Cycle fold under cursor (org TAB)", localCycle],
+  ["cycle-global", "Cycle global fold overview (org S-TAB)", globalCycle],
+  ["move-subtree-down", "Move subtree down (org M-↓)", (view) => moveSubtree(view, true, 1)],
+  ["move-subtree-up", "Move subtree up (org M-↑)", (view) => moveSubtree(view, false, 1)],
+];
+
 module.exports = class EvilOrgPlugin extends Plugin {
   installVimOverrides() {
     const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
@@ -661,9 +689,9 @@ module.exports = class EvilOrgPlugin extends Plugin {
     }
     // M-j / M-k move the subtree (org M-↓ / M-↑). On macOS vim reads
     // Option-j as <A-j> too.
-    Vim.defineAction("orgMoveSubtree", (cm, args) => {
+    Vim.defineAction("orgMoveSubtree", guarded((cm, args) => {
       if (cm.cm6) moveSubtree(cm.cm6, args.forward, args.repeat || 1);
-    });
+    }));
     Vim.mapCommand("<A-j>", "action", "orgMoveSubtree", { forward: true }, { context: "normal", isEdit: true });
     Vim.mapCommand("<A-k>", "action", "orgMoveSubtree", { forward: false }, { context: "normal", isEdit: true });
     // `ar`/`ir` shadow vim's `a<register>`/`i<register>` text objects for `r`,
@@ -671,8 +699,11 @@ module.exports = class EvilOrgPlugin extends Plugin {
     Vim.defineMotion("orgSubtree", subtreeTextObject);
     Vim.mapCommand("ar", "motion", "orgSubtree", {});
     Vim.mapCommand("ir", "motion", "orgSubtree", { textObjectInner: true });
+    // Every engine patched keeps the overrides until unload, not just the
+    // current one. Unload runs these last-first, so an engine patched twice
+    // (swapped out and back) ends up with its stock originals.
     this.patchedVim = Vim;
-    this.restoreVim = () => {
+    (this.vimRestorers ||= []).push(() => {
       Vim.defineMotion("expandToLine", original);
       Vim.defineAction("orgMoveSubtree", () => {});
       Vim.defineMotion("orgSubtree", () => null);
@@ -681,7 +712,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
       Vim.defineMotion("orgPasteBefore", (_cm, head) => head);
       Vim.defineOperator("orgIndent", stockIndent);
       Vim.defineOperator("orgDelete", stockDelete(Vim));
-    };
+    });
   }
 
   // Obsidian's Vim drops the Alt modifier on macOS, so Option-j reaches it as
@@ -702,7 +733,9 @@ module.exports = class EvilOrgPlugin extends Plugin {
   }
 
   onunload() {
-    if (this.restoreVim) this.restoreVim();
+    for (const restore of (this.vimRestorers || []).reverse()) restore();
+    this.vimRestorers = [];
+    this.patchedVim = null;
   }
 
   async onload() {
@@ -711,22 +744,15 @@ module.exports = class EvilOrgPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => this.installVimOverrides());
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.installVimOverrides()));
     this.registerDomEvent(document, "keydown", (e) => this.handleAltMove(e), { capture: true });
-    const handle = (view, fn) => {
-      if (!normalMode(view)) return false;
-      try {
-        return fn(view);
-      } catch (e) {
-        console.error("Evil Org:", e);
-        return false;
-      }
-    };
+    // Tab cycles only in normal mode; elsewhere it's left to vim and the editor.
+    const tab = (fn) => guarded((view) => normalMode(view) && fn(view));
     this.registerEditorExtension([
       Prec.highest(
         keymap.of([
           {
             key: "Tab",
-            run: (view) => handle(view, localCycle),
-            shift: (view) => handle(view, globalCycle),
+            run: tab(localCycle),
+            shift: tab(globalCycle),
           },
         ])
       ),
@@ -746,31 +772,18 @@ module.exports = class EvilOrgPlugin extends Plugin {
         });
       }),
     ]);
-    this.addCommand({
-      id: "cycle-local",
-      name: "Cycle fold under cursor (org TAB)",
-      editorCallback: (editor) => {
-        const view = editor.cm;
-        if (view) handle(view, localCycle);
-      },
-    });
-    this.addCommand({
-      id: "cycle-global",
-      name: "Cycle global fold overview (org S-TAB)",
-      editorCallback: (editor) => {
-        const view = editor.cm;
-        if (view) handle(view, globalCycle);
-      },
-    });
-    for (const [id, name, forward] of [
-      ["move-subtree-down", "Move subtree down (org M-↓)", true],
-      ["move-subtree-up", "Move subtree up (org M-↑)", false],
-    ]) {
+    // A command is an explicit request, so unlike Tab it also runs in insert
+    // mode (a hotkey can fire there) and without vim. It waits only while vim
+    // is mid-command: a visual selection or pending operator would be left
+    // out of step with text or folds changed under it.
+    for (const [id, name, fn] of COMMANDS) {
+      const run = guarded(fn);
       this.addCommand({
         id,
         name,
         editorCallback: (editor) => {
-          if (editor.cm) moveSubtree(editor.cm, forward, 1);
+          const view = editor.cm;
+          if (view && vimIdle(view)) run(view);
         },
       });
     }

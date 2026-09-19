@@ -710,9 +710,71 @@ test("var selects the subtree, ar again the parent", async () => {
   assert.equal(text(v), "# Z");
 });
 
+// --- commands --------------------------------------------------------------------
+
+const runCommand = (id, view) => plugin.commands.find((c) => c.id === id).editorCallback({ cm: view });
+
+test("the four commands keep their ids", () => {
+  assert.deepEqual(plugin.commands.map((c) => c.id), ["cycle-local", "cycle-global", "move-subtree-down", "move-subtree-up"]);
+});
+
+test("commands run in normal and insert mode, not in visual mode", async () => {
+  const v = open(DOC);
+  gotoLine(v, 3);
+  runCommand("cycle-local", v);
+  assert.deepEqual(foldedLines(v), [3]);
+  await keys(v, "i");
+  runCommand("move-subtree-down", v);
+  assert.equal(text(v), "# A\na\n## D\nd\n## B\nb\n### C\nc");
+  assert.deepEqual(foldedLines(v), [5]);
+  await keys(v, "<Esc>V");
+  runCommand("move-subtree-up", v);
+  runCommand("cycle-global", v);
+  assert.equal(text(v), "# A\na\n## D\nd\n## B\nb\n### C\nc");
+  assert.deepEqual(foldedLines(v), [5]);
+});
+
+test("a command that throws logs the error instead", () => {
+  const logged = [];
+  const error = console.error;
+  console.error = (...args) => logged.push(args);
+  try {
+    runCommand("move-subtree-down", {});
+  } finally {
+    console.error = error;
+  }
+  assert.equal(logged.length, 1);
+  assert.equal(logged[0][0], "Evil Org:");
+});
+
 // Must run last: these unload the plugin.
-test("after unload, >> on a heading indents as stock vim does", async () => {
+test("unload restores every Vim engine the plugin patched", async () => {
+  // A stand-in for an engine that another plugin swaps in and out again.
+  const calls = [];
+  const record = (kind) => (name) => calls.push(`${kind} ${name}`);
+  const other = { defineMotion: record("motion"), defineOperator: record("operator"),
+    defineAction: record("action"), mapCommand: record("map") };
+  window.CodeMirrorAdapter.Vim = other;
+  plugin.installVimOverrides();
+  assert.equal(plugin.patchedVim, other);
+  window.CodeMirrorAdapter.Vim = Vim;
+  plugin.installVimOverrides();
+  assert.equal(plugin.patchedVim, Vim);
+  const installed = calls.length;
   plugin.onunload();
+  assert.deepEqual(calls.slice(installed).sort(), [
+    "action orgMoveSubtree", "motion expandToLine", "motion orgPasteAfter", "motion orgPasteBefore",
+    "motion orgSubtree", "operator orgDelete", "operator orgIndent",
+  ]);
+  // Vim, patched twice, is back to stock: dd on a folded heading deletes one line.
+  const v = open(DOC);
+  fold(v, 3);
+  gotoLine(v, 3);
+  await keys(v, "dd");
+  assert.equal(text(v), "# A\na\nb\n### C\nc\n## D\nd");
+});
+
+test("after unload, >> on a heading indents as stock vim does", async () => {
   const v = open(DOC);
   gotoLine(v, 3);
   await keys(v, ">>");

@@ -191,6 +191,15 @@ test("Vd on a folded heading deletes the subtree", async () => {
   assert.equal(text(v), "# A\na\n## D\nd");
 });
 
+test("V starting inside a fold closed under it grows to the fold's heading", async () => {
+  const v = open(DOC);
+  gotoLine(v, 5);
+  await keys(v, "V");
+  fold(v, 3);
+  await keys(v, "Gd");
+  assert.equal(text(v), "# A\na");
+});
+
 // --- undo brings folds back --------------------------------------------------
 
 test("u after dd on a folded heading restores it folded", async () => {
@@ -604,6 +613,19 @@ test("M-j on a body line moves the line, over a folded heading as one line", asy
   gotoLine(v, 2);
   await keys(v, "<A-k>");
   assert.equal(text(v), "a\n# A\n## B\nb\n### C\n## D\nd\nc");
+});
+
+test("M-k moves a body line over a folded code block, and the block back", async () => {
+  const v = open("# A\nx\n```\ncode\n```\ny");
+  fold(v, 3);
+  gotoLine(v, 6);
+  await keys(v, "<A-k>");
+  assert.equal(text(v), "# A\nx\ny\n```\ncode\n```");
+  assert.deepEqual(foldedLines(v), [4]);
+  gotoLine(v, 4);
+  await keys(v, "<A-k>");
+  assert.equal(text(v), "# A\nx\n```\ncode\n```\ny");
+  assert.deepEqual(foldedLines(v), [3]);
 });
 
 // --- ar / ir -------------------------------------------------------------------

@@ -190,16 +190,29 @@ function foldedLineEnd(doc, folds, pos) {
   return end;
 }
 
+// Last line (1-based) of line n and any closed fold that starts on or
+// overlaps it.
+function foldedLastLine(doc, folds, n) {
+  return doc.lineAt(foldedLineEnd(doc, folds, doc.line(n).from)).number;
+}
+
+// Start of the line where the outermost closed fold running over pos from
+// before it starts; pos itself if there is none. Unlike foldedLineEnd this
+// doesn't go to the line boundary on its own: a mouse selection in V mode can
+// start mid-line, and orgDelete tests a line's end, not its start.
+function foldedLineStart(doc, folds, pos) {
+  let start = pos;
+  for (const f of folds) if (f.from < pos && f.to >= pos) start = Math.min(start, doc.lineAt(f.from).from);
+  return start;
+}
+
 // Vim-style V over closed folds: grow the linewise selection so that any fold
 // touching its first or last line is selected in full.
 function foldExtendedSelection(state) {
   const { anchor, head } = state.selection.main;
   const doc = state.doc;
   const folds = allFolds(state);
-  let top = Math.min(anchor, head);
-  for (const f of folds) {
-    if (f.from < top && f.to >= top) top = doc.lineAt(f.from).from;
-  }
+  const top = foldedLineStart(doc, folds, Math.min(anchor, head));
   const bottom = foldedLineEnd(doc, folds, Math.max(anchor, head));
   const headIsTop = head < anchor;
   const next = headIsTop ? { anchor: bottom, head: top } : { anchor: top, head: bottom };
@@ -299,7 +312,7 @@ function foldAwareExpandToLine(original) {
     let line = head.line + 1; // CodeMirror 6 lines are 1-based
     for (let i = 0; i < args.repeat; i++) {
       if (i > 0) line = Math.min(line + 1, doc.lines);
-      line = doc.lineAt(foldedLineEnd(doc, folds, doc.line(line).from)).number;
+      line = foldedLastLine(doc, folds, line);
     }
     return new head.constructor(line - 1, Infinity);
   };
@@ -358,10 +371,7 @@ function orgDelete(Vim) {
     const state = cm.cm6.state;
     const doc = state.doc;
     const prev = doc.line(start.line); // 1-based: the line before the deleted ones
-    const outer = allFolds(state)
-      .filter((f) => f.from < prev.to && f.to >= prev.to)
-      .sort((a, b) => a.from - b.from)[0];
-    const target = outer ? doc.lineAt(outer.from) : prev;
+    const target = doc.lineAt(foldedLineStart(doc, allFolds(state), prev.to));
     const text = doc.sliceString(doc.line(start.line + 1).from);
     const Pos = anchor.constructor;
     const lastLine = cm.lastLine();
@@ -393,7 +403,7 @@ function pasteMotion(Vim, after) {
     const headLine = doc.line(head.line + 1);
     let target = head.line; // 0-based line the paste goes after (p) or before (P)
     if (after) {
-      target = doc.lineAt(foldedLineEnd(doc, allFolds(view.state), headLine.from)).number - 1;
+      target = foldedLastLine(doc, allFolds(view.state), headLine.number) - 1;
     }
     const first = after ? target + 2 : target + 1; // 1-based, in the new doc
     const reclose = after && target !== head.line ? headLine.from : null;
@@ -547,14 +557,14 @@ function moveSubtree(view, forward, count) {
   const n = doc.lineAt(cursor).number;
   const level = levels[n];
   const a1 = n;
-  const a2 = level ? sectionEnd(doc, levels, n, false) : doc.lineAt(foldedLineEnd(doc, folds, doc.line(n).from)).number;
+  const a2 = level ? sectionEnd(doc, levels, n, false) : foldedLastLine(doc, folds, n);
   let b1 = 0, b2 = 0;
   if (forward) {
     for (let end = a2, c = 0; c < count; c++) {
       let next = end + 1;
       while (level && next <= doc.lines && isBlank(doc.line(next).text)) next++;
       if (next > doc.lines || (level && levels[next] !== level)) break;
-      end = level ? sectionEnd(doc, levels, next, false) : doc.lineAt(foldedLineEnd(doc, folds, doc.line(next).from)).number;
+      end = level ? sectionEnd(doc, levels, next, false) : foldedLastLine(doc, folds, next);
       if (!b1) b1 = next;
       b2 = end;
     }
@@ -566,8 +576,7 @@ function moveSubtree(view, forward, count) {
         if (prev < 1 || levels[prev] !== level) break;
       } else {
         if (prev < 1) break;
-        const pos = doc.line(prev).from;
-        for (const f of folds) if (f.from < pos && f.to >= pos) prev = Math.min(prev, doc.lineAt(f.from).number);
+        prev = doc.lineAt(foldedLineStart(doc, folds, doc.line(prev).from)).number;
       }
       if (!b2) {
         b2 = a1 - 1;

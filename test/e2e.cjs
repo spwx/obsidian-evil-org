@@ -638,6 +638,45 @@ test("M-k moves a body line over a folded code block, and the block back", async
   assert.deepEqual(foldedLines(v), [3]);
 });
 
+test("a count with M-k moves back past subtrees and blank lines, folds and all", async () => {
+  const v = open("# T\n## A\n### A1\na\n\n## B\nb\n\n## C\nc");
+  fold(v, 3);
+  gotoLine(v, 9);
+  await keys(v, "2<A-k>");
+  assert.equal(text(v), "# T\n## C\nc\n\n## A\n### A1\na\n\n## B\nb");
+  assert.deepEqual(foldedLines(v), [6]);
+  assert.equal(cursorLine(v), 2);
+  gotoLine(v, 9);
+  await keys(v, "5<A-k>");
+  assert.equal(text(v), "# T\n## B\nb\n\n## C\nc\n\n## A\n### A1\na");
+  assert.deepEqual(foldedLines(v), [9]);
+  assert.equal(cursorLine(v), 2);
+});
+
+test("a count moves a body line past that many lines, a closed fold counting as one", async () => {
+  const v = open("# A\nx\n```\ncode\n```\ny\nz");
+  fold(v, 3);
+  gotoLine(v, 2);
+  await keys(v, "2<A-j>");
+  assert.equal(text(v), "# A\n```\ncode\n```\ny\nx\nz");
+  assert.deepEqual(foldedLines(v), [2]);
+  assert.equal(cursorLine(v), 6);
+  await keys(v, "2<A-k>");
+  assert.equal(text(v), "# A\nx\n```\ncode\n```\ny\nz");
+  assert.deepEqual(foldedLines(v), [3]);
+  assert.equal(cursorLine(v), 2);
+});
+
+test("M-j on the last line and M-k on the first line do nothing", async () => {
+  const v = open("x\ny");
+  gotoLine(v, 2);
+  await keys(v, "<A-j>");
+  gotoLine(v, 1);
+  await keys(v, "<A-k>");
+  assert.equal(text(v), "x\ny");
+  assert.equal(cursorLine(v), 1);
+});
+
 // --- ar / ir -------------------------------------------------------------------
 
 test("dar deletes the subtree around the cursor, dir its body", async () => {

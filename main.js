@@ -590,77 +590,99 @@ function moveSubtree(view, forward, count) {
   const state = view.state;
   const doc = state.doc;
   const folds = allFolds(state);
-  const levels = headingLevels(doc);
-  const cursor = state.selection.main.head;
-  const n = doc.lineAt(cursor).number;
-  const level = levels[n];
-  const a1 = n;
-  const a2 = level ? sectionEnd(doc, n, false) : foldedLastLine(doc, folds, n);
-  let b1 = 0, b2 = 0;
+  const n = doc.lineAt(state.selection.main.head).number;
+  const level = headingLevels(doc)[n];
+  const block = [n, blockEnd(doc, folds, level, n)];
+  const siblings = siblingBlocks(doc, folds, level, block, forward, count);
+  if (siblings.length === 0) return false;
+  const near = siblings[0];
+  const far = siblings[siblings.length - 1];
   if (forward) {
-    for (let end = a2, c = 0; c < count; c++) {
-      let next = end + 1;
-      while (level && next <= doc.lines && isBlank(doc.line(next).text)) next++;
-      if (next > doc.lines || (level && levels[next] !== level)) break;
-      end = level ? sectionEnd(doc, next, false) : foldedLastLine(doc, folds, next);
-      if (!b1) b1 = next;
-      b2 = end;
-    }
+    swapSpans(view, folds, block, [near[0], far[1]]);
   } else {
-    for (let start = a1, c = 0; c < count; c++) {
-      let prev = start - 1;
-      if (level) {
-        while (prev >= 1 && !(levels[prev] && levels[prev] <= level)) prev--;
-        if (prev < 1 || levels[prev] !== level) break;
-      } else {
-        if (prev < 1) break;
-        prev = doc.lineAt(foldedLineStart(doc, folds, doc.line(prev).from)).number;
-      }
-      if (!b2) {
-        b2 = a1 - 1;
-        while (b2 > prev && isBlank(doc.line(b2).text)) b2--;
-      }
-      b1 = start = prev;
-    }
+    // Blank lines just above the block stay where they are, even at the end
+    // of a closed fold (so not near[1]).
+    let end = n - 1;
+    while (end > near[0] && isBlank(doc.line(end).text)) end--;
+    swapSpans(view, folds, [far[0], end], block);
   }
-  if (!b1) return false;
+  return true;
+}
 
-  const [first, second] = forward ? [[a1, a2], [b1, b2]] : [[b1, b2], [a1, a2]];
-  const from = doc.line(first[0]).from;
-  const firstEnd = doc.line(first[1]).to;
-  const secondStart = doc.line(second[0]).from;
-  const to = doc.line(second[1]).to;
+// Last line of the block moveSubtree moves that starts on line n: with a
+// heading's level, its subtree without trailing blank lines; with level 0, the
+// line and any closed fold on it.
+function blockEnd(doc, folds, level, n) {
+  return level ? sectionEnd(doc, n, false) : foldedLastLine(doc, folds, n);
+}
+
+// Up to count blocks of the given level beside block ([first, last] lines),
+// after it going forward, else before it; nearest first, each [first, last].
+function siblingBlocks(doc, folds, level, block, forward, count) {
+  const out = [];
+  while (out.length < count) {
+    const s = siblingStart(doc, folds, level, block, forward);
+    if (!s) break;
+    out.push((block = [s, blockEnd(doc, folds, level, s)]));
+  }
+  return out;
+}
+
+// First line of the block right after or before block, or 0 if there is none.
+// A heading's sibling is the nearest heading of its level or shallower, found
+// past blank lines or deeper subtrees, and only if it has the same level. A
+// line's is the next line, or the previous one with any closed fold over it.
+function siblingStart(doc, folds, level, [first, last], forward) {
+  const i = forward ? last + 1 : first - 1;
+  if (i < 1 || i > doc.lines) return 0;
+  if (!level) return forward ? i : doc.lineAt(foldedLineStart(doc, folds, doc.line(i).from)).number;
+  const levels = headingLevels(doc);
+  let h = i;
+  while (h >= 1 && h <= doc.lines && !(levels[h] && levels[h] <= level)) h += forward ? 1 : -1;
+  return levels[h] === level ? h : 0;
+}
+
+// Swap the line spans upper and lower ([first, last], upper above lower) in
+// one change, leaving the text between them in place. The cursor moves with
+// its span, and the folds that start in either span are closed again.
+function swapSpans(view, folds, upper, lower) {
+  const state = view.state;
+  const doc = state.doc;
+  const levels = headingLevels(doc);
+  const from = doc.line(upper[0]).from;
+  const upperEnd = doc.line(upper[1]).to;
+  const lowerStart = doc.line(lower[0]).from;
+  const to = doc.line(lower[1]).to;
+  const upperText = doc.sliceString(from, upperEnd);
+  const gap = doc.sliceString(upperEnd, lowerStart);
+  const lowerText = doc.sliceString(lowerStart, to);
+  // How far the text at pos moves: the lower span goes to `from`, the upper
+  // one after it and the gap.
+  const shift = (pos) => (pos <= upperEnd ? lowerText.length + gap.length : from - lowerStart);
+  const spanEnd = (pos) => (pos <= upperEnd ? upperEnd : to);
   // Replace through the end of any fold that starts in the range, so every
   // such fold is dropped whole (and restored by undo) and can be re-closed.
   const inside = folds.filter((f) => f.from >= from && f.from <= to);
   const replaceTo = Math.max(to, ...inside.map((f) => f.to));
-  const firstText = doc.sliceString(from, firstEnd);
-  const gap = doc.sliceString(firstEnd, secondStart);
-  const secondText = doc.sliceString(secondStart, to);
-  const insert = secondText + gap + firstText + doc.sliceString(to, replaceTo);
-  const secondShift = from - secondStart;
-  const firstShift = secondText.length + gap.length;
-  const shiftA = forward ? firstShift : secondShift;
-
+  // A heading's fold is recomputed where it lands; any other keeps its text,
+  // cut at the end of its span.
   const headingFolds = [];
   const otherFolds = [];
   for (const f of inside) {
-    const inFirst = f.from <= firstEnd;
-    const shift = inFirst ? firstShift : secondShift;
-    const partEnd = inFirst ? firstEnd : to;
     const line = doc.lineAt(f.from);
-    if (levels[line.number] && f.from === line.to) headingFolds.push(line.from + shift);
-    else otherFolds.push({ from: f.from + shift, to: Math.min(f.to, partEnd) + shift });
+    const d = shift(f.from);
+    if (levels[line.number] && f.from === line.to) headingFolds.push(line.from + d);
+    else otherFolds.push({ from: f.from + d, to: Math.min(f.to, spanEnd(f.from)) + d });
   }
+  const cursor = state.selection.main.head;
   view.dispatch({
-    changes: { from, to: replaceTo, insert },
-    selection: { anchor: cursor + shiftA },
+    changes: { from, to: replaceTo, insert: lowerText + gap + upperText + doc.sliceString(to, replaceTo) },
+    selection: { anchor: cursor + shift(cursor) },
     scrollIntoView: true,
     userEvent: "move.line",
   });
   const next = view.state;
   foldRanges(view, [...headingFolds.map((pos) => sectionRange(next, next.doc.lineAt(pos))), ...otherFolds]);
-  return true;
 }
 
 // Command ids and names are user-facing: hotkeys are bound to the ids.

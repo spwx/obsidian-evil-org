@@ -8,28 +8,24 @@ const { foldable, foldedRanges, foldEffect, unfoldEffect } = require("@codemirro
 
 const HEADING_RE = /^(#+)(\s|$)/;
 
-function getVimState(view, app) {
-  try {
-    const compat = view.cm;
-    if (compat && compat.state && compat.state.vim) return compat.state.vim;
-  } catch (e) {}
-  if (app) {
-    try {
-      const md = app.workspace.getActiveViewOfType(MarkdownView);
-      const c = md && md.editor && md.editor.cm ? md.editor.cm.cm : null;
-      if (c && c.state && c.state.vim) return c.state.vim;
-    } catch (e) {}
-  }
-  return (view.state && view.state.vim) || null;
+function activeEditorView(app) {
+  const md = app.workspace.getActiveViewOfType(MarkdownView);
+  return md && md.editor ? md.editor.cm : null;
 }
 
-function normalMode(view, app) {
-  const v = getVimState(view, app);
-  if (!v) return false;
-  if (v.insertMode || v.visualMode || v.virtualReplace) return false;
-  if (v.operator) return false;
-  if (v.inputState && v.inputState.keyBuffer && v.inputState.keyBuffer.length > 0) return false;
-  return true;
+// codemirror-vim keeps its CodeMirror 5 adapter at view.cm.
+function getVimState(view) {
+  const cm = view.cm;
+  return (cm && cm.state.vim) || null;
+}
+
+// Normal mode with no operator or keys pending. With allowCount, a key buffer
+// holding only digits (a pending count) still counts as idle.
+function normalMode(view, allowCount = false) {
+  const v = getVimState(view);
+  if (!v || v.insertMode || v.visualMode || v.inputState.operator) return false;
+  const pending = v.inputState.keyBuffer.join("");
+  return allowCount ? /^\d*$/.test(pending) : pending === "";
 }
 
 function allFolds(state) {
@@ -172,8 +168,8 @@ function globalCycle(view) {
   return true;
 }
 
-function visualLineMode(view, app) {
-  const v = getVimState(view, app);
+function visualLineMode(view) {
+  const v = getVimState(view);
   return !!(v && v.visualMode && v.visualLine && !v.visualBlock);
 }
 
@@ -216,9 +212,8 @@ function foldExtendedSelection(state) {
 function keepSelectedFoldsClosed(tr, app) {
   if (tr.docChanged || tr.selection) return tr;
   if (!tr.effects.some((e) => e.is(unfoldEffect))) return tr;
-  const md = app.workspace.getActiveViewOfType(MarkdownView);
-  const view = md && md.editor ? md.editor.cm : null;
-  if (!view || view.state !== tr.startState || !visualLineMode(view, app)) return tr;
+  const view = activeEditorView(app);
+  if (!view || view.state !== tr.startState || !visualLineMode(view)) return tr;
   const sel = tr.startState.selection.main;
   const effects = tr.effects.filter(
     (e) => !(e.is(unfoldEffect) && e.value.from >= sel.from && e.value.to <= sel.to)
@@ -684,17 +679,13 @@ module.exports = class EvilOrgPlugin extends Plugin {
     const key = e.code === "KeyJ" || e.key === "j" ? "<A-j>" : e.code === "KeyK" || e.key === "k" ? "<A-k>" : null;
     const Vim = this.patchedVim;
     if (!key || !Vim) return;
-    const md = this.app.workspace.getActiveViewOfType(MarkdownView);
-    const view = md && md.editor ? md.editor.cm : null;
+    const view = activeEditorView(this.app);
     if (!view || !view.dom.contains(e.target)) return;
-    const cm = view.cm;
-    const vim = cm && cm.state && cm.state.vim;
-    if (!vim || vim.insertMode || vim.visualMode || vim.inputState.operator) return;
-    // A pending count is kept in the key buffer.
-    if (!/^\d*$/.test(vim.inputState.keyBuffer.join(""))) return;
+    // A pending count is kept in the key buffer; let it through to vim.
+    if (!normalMode(view, true)) return;
     e.preventDefault();
     e.stopPropagation();
-    Vim.handleKey(cm, key, "user");
+    Vim.handleKey(view.cm, key, "user");
   }
 
   onunload() {
@@ -708,7 +699,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.installVimOverrides()));
     this.registerDomEvent(document, "keydown", (e) => this.handleAltMove(e), { capture: true });
     const handle = (view, fn) => {
-      if (!normalMode(view, this.app)) return false;
+      if (!normalMode(view)) return false;
       try {
         return fn(view);
       } catch (e) {
@@ -729,14 +720,14 @@ module.exports = class EvilOrgPlugin extends Plugin {
       EditorState.transactionFilter.of((tr) => keepSelectedFoldsClosed(tr, this.app)),
       invertedEffects.of(deletedFolds),
       EditorView.updateListener.of((update) => {
-        if (!update.selectionSet || !visualLineMode(update.view, this.app)) return;
+        if (!update.selectionSet || !visualLineMode(update.view)) return;
         if (!foldExtendedSelection(update.state)) return;
         // Vim is still mid-command here; adjust once it has finished. The
         // change then counts as external, so vim re-syncs its own selection
         // (used by d/y/c/>) from ours.
         const view = update.view;
         queueMicrotask(() => {
-          if (!visualLineMode(view, this.app)) return;
+          if (!visualLineMode(view)) return;
           const next = foldExtendedSelection(view.state);
           if (next) view.dispatch({ selection: EditorSelection.single(next.anchor, next.head) });
         });

@@ -136,6 +136,13 @@ test("Tab cycles folded -> children -> subtree", async () => {
   assert.deepEqual(foldedLines(v), []);
 });
 
+test("Tab after a pending operator is left to vim", async () => {
+  const v = open(DOC);
+  gotoLine(v, 3);
+  await keys(v, "d<Tab>");
+  assert.deepEqual(foldedLines(v), []);
+});
+
 test("S-Tab cycles overview -> contents -> show all", async () => {
   const v = open(DOC);
   await keys(v, "<S-Tab>");

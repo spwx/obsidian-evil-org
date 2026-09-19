@@ -21,20 +21,24 @@ function getVimState(view) {
   return (cm && cm.state.vim) || null;
 }
 
-// Normal mode with no operator or keys pending. With allowCount, a key buffer
-// holding only digits (a pending count) still counts as idle.
-function normalMode(view, allowCount = false) {
-  const v = getVimState(view);
-  if (!v || v.insertMode || v.visualMode || v.inputState.operator) return false;
-  const pending = v.inputState.keyBuffer.join("");
-  return allowCount ? /^\d*$/.test(pending) : pending === "";
+// Vim is mid-command: a visual selection, or an operator or keys pending. With
+// allowCount, a key buffer holding only digits (a pending count) doesn't count.
+function busy(v, allowCount = false) {
+  const keys = v.inputState.keyBuffer.join("");
+  return !!(v.visualMode || v.inputState.operator || (allowCount ? /\D/.test(keys) : keys !== ""));
 }
 
-// Vim isn't in the middle of anything: no visual selection, no operator or
-// keys pending. Insert mode counts as idle, and so does an editor without vim.
+// Normal mode with nothing pending (but a count, with allowCount).
+function normalMode(view, allowCount = false) {
+  const v = getVimState(view);
+  return !!v && !v.insertMode && !busy(v, allowCount);
+}
+
+// Vim isn't in the middle of anything. Insert mode counts as idle, and so does
+// an editor without vim.
 function vimIdle(view) {
   const v = getVimState(view);
-  return !v || (!v.visualMode && !v.inputState.operator && v.inputState.keyBuffer.length === 0);
+  return !v || !busy(v);
 }
 
 // fn, logging instead of throwing: an exception escaping a keymap, command or
@@ -75,7 +79,17 @@ const isBlank = (text) => text.trim() === "";
 
 // Heading level of each line (levels[n] for 1-based line n), 0 for lines that
 // aren't headings. `#` lines in front matter or fenced code blocks don't count.
+// A Text never changes, so the scan is cached per doc: callers ask again freely
+// instead of passing levels around. The array is shared, hence frozen.
+const levelCache = new WeakMap();
+
 function headingLevels(doc) {
+  let levels = levelCache.get(doc);
+  if (!levels) levelCache.set(doc, (levels = Object.freeze(scanHeadingLevels(doc))));
+  return levels;
+}
+
+function scanHeadingLevels(doc) {
   const levels = [0];
   let close = null;
   for (let i = 1; i <= doc.lines; i++) {
@@ -108,7 +122,8 @@ function collectHeadings(state) {
   return out;
 }
 
-function directChildFolds(state, levels, line, own) {
+function directChildFolds(state, line, own) {
+  const levels = headingLevels(state.doc);
   const level = levels[line.number];
   const out = [];
   for (let i = line.number + 1; i <= state.doc.lines; i++) {
@@ -130,8 +145,7 @@ function localCycle(view) {
   const head = state.selection.main.head;
   const line = state.doc.lineAt(head);
   const folds = allFolds(state);
-  const levels = headingLevels(state.doc);
-  const level = levels[line.number];
+  const level = headingLevels(state.doc)[line.number];
   const own = foldable(state, line.from, line.to);
 
   if (level === 0) {
@@ -158,7 +172,7 @@ function localCycle(view) {
 
   if (isFolded(folds, own)) {
     const effects = [unfoldEffect.of(own)];
-    for (const c of directChildFolds(state, levels, line, own)) {
+    for (const c of directChildFolds(state, line, own)) {
       if (!isFolded(folds, c)) effects.push(foldEffect.of(c));
     }
     view.dispatch({ effects });
@@ -270,7 +284,8 @@ function deletedFolds(tr) {
 
 // Last line of the section of the heading on line h: up to the next heading of
 // the same or a higher level, with or without trailing blank lines.
-function sectionEnd(doc, levels, h, withBlank) {
+function sectionEnd(doc, h, withBlank) {
+  const levels = headingLevels(doc);
   let last = h;
   for (let i = h + 1; i <= doc.lines; i++) {
     if (levels[i] && levels[i] <= levels[h]) break;
@@ -286,9 +301,8 @@ function sectionRange(state, line) {
   const r = foldable(state, line.from, line.to);
   if (r) return r;
   const doc = state.doc;
-  const levels = headingLevels(doc);
-  if (!levels[line.number]) return null;
-  const end = doc.line(sectionEnd(doc, levels, line.number, true)).to;
+  if (!headingLevels(doc)[line.number]) return null;
+  const end = doc.line(sectionEnd(doc, line.number, true)).to;
   return end > line.to ? { from: line.to, to: end } : null;
 }
 
@@ -523,7 +537,8 @@ function orgIndent(cm, args, ranges) {
 }
 
 // The heading whose section contains line n, then its ancestors, innermost first.
-function enclosingHeadings(levels, n) {
+function enclosingHeadings(doc, n) {
+  const levels = headingLevels(doc);
   const out = [];
   let h = n;
   while (h >= 1 && !levels[h]) h--;
@@ -542,9 +557,8 @@ function enclosingHeadings(levels, n) {
 // in visual mode, takes in the enclosing subtrees.
 function subtreeTextObject(cm, head, motionArgs, vim) {
   const doc = cm.cm6.state.doc;
-  const levels = headingLevels(doc);
   const inner = !!motionArgs.textObjectInner;
-  const headings = enclosingHeadings(levels, head.line + 1);
+  const headings = enclosingHeadings(doc, head.line + 1);
   let selFirst = Infinity, selLast = -Infinity;
   if (vim.visualMode) {
     selFirst = Math.min(vim.sel.anchor.line, vim.sel.head.line) + 1;
@@ -554,7 +568,7 @@ function subtreeTextObject(cm, head, motionArgs, vim) {
   for (let i = Math.min((motionArgs.repeat || 1), headings.length) - 1; i < headings.length; i++) {
     const h = headings[i];
     let first = inner ? h + 1 : h;
-    const last = sectionEnd(doc, levels, h, !inner);
+    const last = sectionEnd(doc, h, !inner);
     while (inner && first <= last && isBlank(doc.line(first).text)) first++;
     if (first > last) break;
     range = { first, last };
@@ -581,14 +595,14 @@ function moveSubtree(view, forward, count) {
   const n = doc.lineAt(cursor).number;
   const level = levels[n];
   const a1 = n;
-  const a2 = level ? sectionEnd(doc, levels, n, false) : foldedLastLine(doc, folds, n);
+  const a2 = level ? sectionEnd(doc, n, false) : foldedLastLine(doc, folds, n);
   let b1 = 0, b2 = 0;
   if (forward) {
     for (let end = a2, c = 0; c < count; c++) {
       let next = end + 1;
       while (level && next <= doc.lines && isBlank(doc.line(next).text)) next++;
       if (next > doc.lines || (level && levels[next] !== level)) break;
-      end = level ? sectionEnd(doc, levels, next, false) : foldedLastLine(doc, folds, next);
+      end = level ? sectionEnd(doc, next, false) : foldedLastLine(doc, folds, next);
       if (!b1) b1 = next;
       b2 = end;
     }

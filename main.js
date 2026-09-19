@@ -6,7 +6,9 @@ const { keymap, EditorView } = require("@codemirror/view");
 const { invertedEffects } = require("@codemirror/commands");
 const { foldable, foldedRanges, foldEffect, unfoldEffect } = require("@codemirror/language");
 
-const HEADING_RE = /^(#+)(\s|$)/;
+// Markdown has six heading levels; a line of seven or more `#`s is body text.
+const MAX_LEVEL = 6;
+const HEADING_RE = new RegExp(`^(#{1,${MAX_LEVEL}})(\\s|$)`);
 
 function activeEditorView(app) {
   const md = app.workspace.getActiveViewOfType(MarkdownView);
@@ -38,8 +40,10 @@ function allFolds(state) {
   return out;
 }
 
+const sameRange = (a, b) => a.from === b.from && a.to === b.to;
+
 function isFolded(folds, range) {
-  return folds.some((f) => f.from === range.from && f.to === range.to);
+  return folds.some((f) => sameRange(f, range));
 }
 
 function headingLevel(text) {
@@ -108,9 +112,9 @@ function localCycle(view) {
   const folds = allFolds(state);
   const levels = headingLevels(state.doc);
   const level = levels[line.number];
+  const own = foldable(state, line.from, line.to);
 
   if (level === 0) {
-    const own = foldable(state, line.from, line.to);
     if (own) {
       const covering = folds.find((f) => f.from <= own.from && f.to >= own.to);
       if (covering) view.dispatch({ effects: [unfoldEffect.of(covering)] });
@@ -125,15 +129,12 @@ function localCycle(view) {
     return false;
   }
 
-  const own = foldable(state, line.from, line.to);
   const covering = folds.find((f) => f.from <= line.from && f.to >= line.to);
-  if (covering && !(own && covering.from === own.from && covering.to === own.to)) {
+  if (covering && !(own && sameRange(covering, own))) {
     view.dispatch({ effects: [unfoldEffect.of(covering)] });
     return true;
   }
   if (!own) return true;
-
-  const inRange = folds.filter((f) => f.from >= own.from && f.to <= own.to);
 
   if (isFolded(folds, own)) {
     const effects = [unfoldEffect.of(own)];
@@ -143,6 +144,7 @@ function localCycle(view) {
     view.dispatch({ effects });
     return true;
   }
+  const inRange = folds.filter((f) => f.from >= own.from && f.to <= own.to);
   if (inRange.length > 0) {
     view.dispatch({ effects: inRange.map((f) => unfoldEffect.of(f)) });
     return true;
@@ -246,6 +248,17 @@ function deletedFolds(tr) {
     .map((f) => foldEffect.of(f));
 }
 
+// Last line of the section of the heading on line h: up to the next heading of
+// the same or a higher level, with or without trailing blank lines.
+function sectionEnd(doc, levels, h, withBlank) {
+  let last = h;
+  for (let i = h + 1; i <= doc.lines; i++) {
+    if (levels[i] && levels[i] <= levels[h]) break;
+    if (withBlank || !isBlank(doc.line(i).text)) last = i;
+  }
+  return last;
+}
+
 // Fold range for a heading's section: CodeMirror's (Obsidian's) own range,
 // or, if that isn't available yet for freshly inserted text, the same range
 // computed directly: to the last line before a heading of equal or higher level.
@@ -254,14 +267,8 @@ function sectionRange(state, line) {
   if (r) return r;
   const doc = state.doc;
   const levels = headingLevels(doc);
-  const level = levels[line.number];
-  if (!level) return null;
-  let end = line.to;
-  for (let i = line.number + 1; i <= doc.lines; i++) {
-    const lv = levels[i];
-    if (lv && lv <= level) break;
-    end = doc.line(i).to;
-  }
+  if (!levels[line.number]) return null;
+  const end = doc.line(sectionEnd(doc, levels, line.number, true)).to;
   return end > line.to ? { from: line.to, to: end } : null;
 }
 
@@ -283,7 +290,7 @@ function pastedSubtreeFolds(state, first, last) {
   for (let i = first; i <= last; i++) {
     if (levels[i] !== level) continue;
     const r = sectionRange(state, doc.line(i));
-    if (r && (r.to <= end || doc.sliceString(end, r.to).trim() === "")) out.push(r);
+    if (r && (r.to <= end || isBlank(doc.sliceString(end, r.to)))) out.push(r);
   }
   return out;
 }
@@ -320,6 +327,8 @@ function foldAwareExpandToLine(original) {
 
 const firstNonBlank = (text) => text.length - text.trimStart().length;
 
+const posBefore = (a, b) => a.line < b.line || (a.line === b.line && a.ch < b.ch);
+
 // The stock `delete` operator as it runs on CodeMirror 6 (vim's operator
 // table isn't exposed, so it can't be wrapped).
 function stockDelete(Vim) {
@@ -341,13 +350,24 @@ function stockDelete(Vim) {
       text = cm.getSelection();
       cm.replaceSelections(ranges.map(() => ""));
       const { anchor, head: h } = ranges[0];
-      head = h.line < anchor.line || (h.line === anchor.line && h.ch < anchor.ch) ? h : anchor;
+      head = posBefore(h, anchor) ? h : anchor;
     }
     Vim.getRegisterController().pushText(args.registerName, "delete", text, args.linewise, vim.visualBlock);
     const line = Math.min(Math.max(cm.firstLine(), head.line), cm.lastLine());
     const maxCh = cm.getLine(line).length - 1 + (vim.insertMode || vim.visualMode ? 1 : 0);
     return new Pos(line, Math.min(Math.max(0, head.ch), maxCh));
   };
+}
+
+// First and last (1-based) lines of a linewise operator range. The range may
+// end at the start of the line after it, past the end of the note for the last
+// line; this compares positions, not offsets, since an offset would clip that
+// to the start of an empty last line.
+function operatorLines(range) {
+  const { anchor, head } = range;
+  const [start, end] = posBefore(head, anchor) ? [head, anchor] : [anchor, head];
+  const last = end.ch === 0 && end.line > start.line ? end.line - 1 : end.line;
+  return { first: start.line + 1, last: last + 1 };
 }
 
 // `d` (and `x`, `X`, `D` in visual mode). Vim's linewise delete at the end of
@@ -359,23 +379,18 @@ function stockDelete(Vim) {
 function orgDelete(Vim) {
   const stock = stockDelete(Vim);
   return function (cm, args, ranges) {
-    const { anchor, head } = ranges[0];
-    const forward = anchor.line < head.line || (anchor.line === head.line && anchor.ch <= head.ch);
-    const start = forward ? anchor : head;
-    const end = forward ? head : anchor;
-    // Linewise ranges end at the start of the line after the last one.
-    const last = end.ch === 0 && end.line > start.line ? end.line - 1 : end.line;
-    if (!args.linewise || cm.state.vim.visualBlock || ranges.length > 1 || start.line === 0 || last < cm.lastLine()) {
-      return stock(cm, args, ranges);
-    }
     const state = cm.cm6.state;
     const doc = state.doc;
-    const prev = doc.line(start.line); // 1-based: the line before the deleted ones
+    const { first, last } = operatorLines(ranges[0]);
+    if (!args.linewise || cm.state.vim.visualBlock || ranges.length > 1 || first === 1 || last < doc.lines) {
+      return stock(cm, args, ranges);
+    }
+    const prev = doc.line(first - 1); // the line before the deleted ones
     const target = doc.lineAt(foldedLineStart(doc, allFolds(state), prev.to));
-    const text = doc.sliceString(doc.line(start.line + 1).from);
-    const Pos = anchor.constructor;
+    const text = doc.sliceString(doc.line(first).from);
+    const Pos = ranges[0].anchor.constructor;
     const lastLine = cm.lastLine();
-    cm.replaceRange("", new Pos(start.line - 1, prev.length), new Pos(lastLine, cm.getLine(lastLine).length));
+    cm.replaceRange("", new Pos(prev.number - 1, prev.length), new Pos(lastLine, cm.getLine(lastLine).length));
     Vim.getRegisterController().pushText(args.registerName, "delete", text, true, false);
     const cursor = new Pos(target.number - 1, firstNonBlank(target.text));
     // Leaving visual mode, vim first puts the cursor at the selection's head.
@@ -419,17 +434,6 @@ function pasteMotion(Vim, after) {
   };
 }
 
-// First and last (1-based) lines of a linewise operator range. The range may
-// end at the start of the line after it.
-function operatorLines(doc, cm, range) {
-  const a = cm.indexFromPos(range.anchor);
-  const h = cm.indexFromPos(range.head);
-  const from = Math.min(a, h);
-  let to = Math.max(a, h);
-  if (to > from && doc.lineAt(to).from === to) to--;
-  return { first: doc.lineAt(from).number, last: doc.lineAt(to).number };
-}
-
 // The stock `indent` operator as it runs on CodeMirror 6 (vim's operator
 // table isn't exposed, so it can't be wrapped): shift the selection vim has
 // just set, then go to the first non-blank of the first line.
@@ -441,7 +445,7 @@ function stockIndent(cm, args, ranges) {
     else cm.indentLess();
   }
   const doc = cm.cm6.state.doc;
-  const line = doc.line(operatorLines(doc, cm, ranges[0]).first);
+  const line = doc.line(operatorLines(ranges[0]).first);
   return new ranges[0].anchor.constructor(line.number - 1, firstNonBlank(line.text));
 }
 
@@ -454,7 +458,7 @@ function orgIndent(cm, args, ranges) {
   const view = cm.cm6;
   const state = view.state;
   const doc = state.doc;
-  const { first, last } = operatorLines(doc, cm, ranges[0]);
+  const { first, last } = operatorLines(ranges[0]);
   const levels = headingLevels(doc);
   if (!levels[first]) return stockIndent(cm, args, ranges);
   const vim = cm.state.vim;
@@ -466,7 +470,7 @@ function orgIndent(cm, args, ranges) {
     const level = levels[i];
     if (!level) continue;
     const line = doc.line(i);
-    const next = args.indentRight ? Math.min(6, level + steps) : Math.max(1, level - steps);
+    const next = args.indentRight ? Math.min(MAX_LEVEL, level + steps) : Math.max(1, level - steps);
     if (next > level) changes.push({ from: line.from, insert: "#".repeat(next - level) });
     else if (next < level) changes.push({ from: line.from, to: line.from + level - next });
     closed.push(...folds.filter((f) => f.from === line.to));
@@ -485,17 +489,6 @@ function orgIndent(cm, args, ranges) {
     }, 0);
   }
   return new ranges[0].anchor.constructor(first - 1, 0);
-}
-
-// Last line of the section of the heading on line h: up to the next heading of
-// the same or a higher level, with or without trailing blank lines.
-function sectionEnd(doc, levels, h, withBlank) {
-  let last = h;
-  for (let i = h + 1; i <= doc.lines; i++) {
-    if (levels[i] && levels[i] <= levels[h]) break;
-    if (withBlank || !isBlank(doc.line(i).text)) last = i;
-  }
-  return last;
 }
 
 // The heading whose section contains line n, then its ancestors, innermost first.

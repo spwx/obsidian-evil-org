@@ -390,6 +390,16 @@ test("<< on a level-1 heading and >> on a level-6 heading do nothing", async () 
   assert.equal(text(v), "# A\na\n###### F\nf");
 });
 
+test("a line of seven #s is body text: >> indents it, ar goes past it", async () => {
+  const v = open("## A\n####### x\n## B");
+  gotoLine(v, 2);
+  await keys(v, ">>");
+  assert.match(v.state.doc.line(2).text, /^\s+####### x$/);
+  await keys(v, "u");
+  await keys(v, "dar");
+  assert.equal(text(v), "## B");
+});
+
 test("3>> shifts every heading in three lines", async () => {
   const v = open(DOC);
   gotoLine(v, 3);

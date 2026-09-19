@@ -1,0 +1,18 @@
+{
+  "name": "obsidian-evil-org",
+  "private": true,
+  "description": "Dev-only: end-to-end tests for the Evil Org Obsidian plugin. The plugin itself is main.js, with no build step.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node test/e2e.cjs"
+  },
+  "devDependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.5",
+    "@codemirror/view": "^6.43.12",
+    "@replit/codemirror-vim": "^6.4.0",
+    "jsdom": "^30.1.0"
+  }
+}

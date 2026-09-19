@@ -258,7 +258,7 @@ function foldRanges(view, ranges) {
 const plainExpandToLine = (_cm, head, args) => new head.constructor(head.line + args.repeat - 1, Infinity);
 
 function foldAwareExpandToLine(original) {
-  return function (cm, head, args, ...rest) {
+  const expand = function (cm, head, args, ...rest) {
     const view = cm && cm.cm6;
     if (!view) return original.call(this, cm, head, args, ...rest);
     const doc = view.state.doc;
@@ -271,6 +271,55 @@ function foldAwareExpandToLine(original) {
     }
     return new head.constructor(line - 1, Infinity);
   };
+  return function (cm, head, args, vim, inputState, ...rest) {
+    const end = expand.call(this, cm, head, args, vim, inputState, ...rest);
+    const view = cm && cm.cm6;
+    if (view && inputState && inputState.operator === "delete") {
+      const doc = view.state.doc;
+      if (head.line > 0 && end.line + 1 >= doc.lines) {
+        endDelete = { doc, from: doc.line(head.line + 1).from };
+        queueMicrotask(() => { endDelete = null; });
+      }
+    }
+    return end;
+  };
+}
+
+// Vim's `dd` on the last line also deletes the newline before it, so no empty
+// line is left at the end of the note. codemirror-vim does this only for a
+// single line, so for a closed fold or `3dd` the expandToLine motion notes
+// where the deleted lines start and this filter extends the deletion. Vim then
+// sets the cursor on the new last line; that goes to its first non-blank, or,
+// if the line is in a closed fold, to the fold's heading so the fold stays
+// closed (CodeMirror opens a fold the cursor enters).
+let endDelete = null;
+
+function deleteNewlineBeforeEnd(tr) {
+  const pending = endDelete;
+  if (!pending) return tr;
+  if (pending.cursor !== undefined) {
+    if (tr.docChanged || !tr.selection) return tr;
+    endDelete = null;
+    return [tr, { selection: EditorSelection.cursor(pending.cursor) }];
+  }
+  if (!tr.docChanged) return tr;
+  endDelete = null;
+  const doc = tr.startState.doc;
+  if (doc !== pending.doc) return tr;
+  let exact = true;
+  let count = 0;
+  tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+    count++;
+    if (fromA !== pending.from || toA !== doc.length || inserted.length > 0) exact = false;
+  });
+  if (!exact || count !== 1) return tr;
+  const end = pending.from - 1;
+  const outer = allFolds(tr.startState)
+    .filter((f) => f.from < end && f.to >= end)
+    .sort((a, b) => a.from - b.from)[0];
+  const line = doc.lineAt(outer ? outer.from : end);
+  endDelete = { cursor: line.from + line.text.length - line.text.trimStart().length };
+  return [tr, { changes: { from: end, to: pending.from }, sequential: true }];
 }
 
 // Motion run by `p`/`P` just before the paste action. With a linewise
@@ -432,6 +481,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
         ])
       ),
       EditorState.transactionFilter.of((tr) => keepSelectedFoldsClosed(tr, this.app)),
+      EditorState.transactionFilter.of(deleteNewlineBeforeEnd),
       EditorView.updateListener.of((update) => {
         if (!update.selectionSet || !visualLineMode(update.view, this.app)) return;
         if (!foldExtendedSelection(update.state)) return;

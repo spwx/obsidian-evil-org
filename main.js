@@ -3,6 +3,7 @@
 const { Plugin, MarkdownView } = require("obsidian");
 const { Prec, EditorState, EditorSelection } = require("@codemirror/state");
 const { keymap, EditorView } = require("@codemirror/view");
+const { invertedEffects } = require("@codemirror/commands");
 const { foldable, foldedRanges, foldEffect, unfoldEffect } = require("@codemirror/language");
 
 const HEADING_RE = /^(#+)(\s|$)/;
@@ -198,6 +199,17 @@ function keepSelectedFoldsClosed(tr, app) {
   );
   if (effects.length === tr.effects.length) return tr;
   return { effects };
+}
+
+// A change that deletes a fold's text drops the fold, and undo only brings
+// back the text. Record the dropped folds with the change so undo (and undo
+// after redo) re-closes them: `dd` on a folded heading, then `u`, restores it
+// folded, as in vim and org.
+function deletedFolds(tr) {
+  if (!tr.docChanged) return [];
+  return allFolds(tr.startState)
+    .filter((f) => tr.changes.mapPos(f.from, 1) >= tr.changes.mapPos(f.to, -1))
+    .map((f) => foldEffect.of(f));
 }
 
 // Fold range for a heading's section: CodeMirror's (Obsidian's) own range,
@@ -514,6 +526,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
         ])
       ),
       EditorState.transactionFilter.of((tr) => keepSelectedFoldsClosed(tr, this.app)),
+      invertedEffects.of(deletedFolds),
       EditorView.updateListener.of((update) => {
         if (!update.selectionSet || !visualLineMode(update.view, this.app)) return;
         if (!foldExtendedSelection(update.state)) return;

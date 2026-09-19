@@ -16,6 +16,7 @@ Turn on **Settings → Editor → Vim key bindings**. Every key below works only
 | `Shift-Tab` | Cycle the whole note: overview → contents → show all (org `S-TAB`). |
 | `V` | Selecting a folded heading selects its whole subtree. |
 | `dd`, `yy`, `cc`, `3dd`, … | A folded heading counts as one line, so these act on the whole subtree. |
+| `u` | Undoing a delete brings back folded headings still folded. |
 | `p` / `P` | Put a yanked subtree after or before a folded heading, not inside it. Pasted subtrees arrive folded (org `org-yank-folded-subtrees`). |
 | `>>` / `<<` | On a heading, demote/promote by adding/removing a `#` instead of indenting. Folded, the whole subtree shifts (org `M-S-→`). Open, only the heading shifts (org `M-→`). Levels stay between 1 and 6. Body lines are left alone. |
 | `3>>`, `V>`, `.` | Every heading in the range shifts. Repeatable and undoable in one step. |

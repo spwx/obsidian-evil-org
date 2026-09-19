@@ -171,6 +171,55 @@ test("Vd on a folded heading deletes the subtree", async () => {
   assert.equal(text(v), "# A\na\n## D\nd");
 });
 
+// --- undo brings folds back --------------------------------------------------
+
+test("u after dd on a folded heading restores it folded", async () => {
+  const v = open(DOC);
+  fold(v, 5);
+  fold(v, 3);
+  gotoLine(v, 3);
+  await keys(v, "ddu");
+  assert.equal(text(v), DOC);
+  assert.deepEqual(foldedLines(v), [3, 5]);
+});
+
+test("u after Vd on a folded heading restores it folded", async () => {
+  const v = open(DOC);
+  fold(v, 3);
+  gotoLine(v, 3);
+  await keys(v, "Vdu");
+  assert.equal(text(v), DOC);
+  assert.deepEqual(foldedLines(v), [3]);
+});
+
+test("u after dd on a folded section at the end restores it folded", async () => {
+  const v = open(DOC);
+  fold(v, 7);
+  gotoLine(v, 7);
+  await keys(v, "ddu");
+  assert.equal(text(v), DOC);
+  assert.deepEqual(foldedLines(v), [7]);
+});
+
+test("u, <C-r>, u after dd still restores the fold", async () => {
+  const v = open(DOC);
+  fold(v, 3);
+  gotoLine(v, 3);
+  await keys(v, "ddu<C-r>");
+  assert.equal(text(v), "# A\na\n## D\nd");
+  await keys(v, "u");
+  assert.equal(text(v), DOC);
+  assert.deepEqual(foldedLines(v), [3]);
+});
+
+test("u after dd on an open heading leaves it open", async () => {
+  const v = open(DOC);
+  gotoLine(v, 3);
+  await keys(v, "ddu");
+  assert.equal(text(v), DOC);
+  assert.deepEqual(foldedLines(v), []);
+});
+
 // --- deleting at the end of the note -----------------------------------------
 
 test("dd on a folded section at the end leaves no blank line", async () => {

@@ -786,6 +786,42 @@ test("a command that throws logs the error instead", () => {
   assert.equal(logged[0][0], "Evil Org:");
 });
 
+// Mobile has no Vim mode: window.CodeMirrorAdapter is missing and editors carry
+// no vim extension. The plugin still loads, quietly, and its commands still run.
+test("without a Vim engine the plugin loads quietly and commands still work", () => {
+  const logged = [];
+  const error = console.error;
+  const adapter = window.CodeMirrorAdapter;
+  delete window.CodeMirrorAdapter;
+  console.error = (...args) => logged.push(args);
+  let mobile;
+  try {
+    mobile = new PluginClass(app);
+    mobile.onload();
+    mobile.installVimOverrides();
+  } finally {
+    console.error = error;
+    window.CodeMirrorAdapter = adapter;
+  }
+  assert.deepEqual(logged, []);
+  assert.ok(!mobile.patchedVim);
+  // Alt-j finds no engine to hand the key to, so it leaves the event alone.
+  const press = new window.KeyboardEvent("keydown", { key: "j", altKey: true, cancelable: true });
+  mobile.handleAltMove(press);
+  assert.equal(press.defaultPrevented, false);
+  const parent = document.createElement("div");
+  document.body.appendChild(parent);
+  const v = new EditorView({
+    parent,
+    state: EditorState.create({ doc: DOC, extensions: [history(), markdown(), codeFolding(), mobile.extensions] }),
+  });
+  gotoLine(v, 3);
+  mobile.commands.find((c) => c.id === "cycle-local").editorCallback({ cm: v });
+  assert.deepEqual(foldedLines(v), [3]);
+  v.destroy();
+  mobile.onunload();
+});
+
 // Must run last: these unload the plugin.
 test("unload restores every Vim engine the plugin patched", async () => {
   // A stand-in for an engine that another plugin swaps in and out again.

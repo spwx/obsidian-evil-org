@@ -55,7 +55,7 @@ npm install
 npm test
 ```
 
-To release, bump `version` in `manifest.json`, commit, then push a tag with the same version (no `v`). The Release workflow runs the tests, attests `main.js` and `manifest.json`, and publishes the GitHub release.
+To release, bump `version` in `manifest.json`, add the same version to `versions.json` (mapped to the manifest's `minAppVersion`, which tells older Obsidian installs which build still runs for them), commit, then push a tag with the same version (no `v`). The Release workflow runs the tests, checks the tag against both files, attests `main.js` and `manifest.json`, and publishes the GitHub release.
 
 ```sh
 git tag 1.0.1 && git push origin 1.0.1

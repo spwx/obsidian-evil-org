@@ -295,13 +295,28 @@ function pastedSubtreeFolds(state, first, last) {
   return out;
 }
 
+// Close the given ranges, skipping missing ones, ones already closed and ones
+// past the end of the doc (a deferred caller's doc may have shrunk since).
 function foldRanges(view, ranges) {
+  const len = view.state.doc.length;
   const folds = allFolds(view.state);
   const effects = ranges
-    .filter((r) => r && !isFolded(folds, r))
+    .filter((r) => r && r.to <= len && !isFolded(folds, r))
     .sort((a, b) => a.from - b.from)
     .map((r) => foldEffect.of(r));
   if (effects.length > 0) view.dispatch({ effects });
+}
+
+// Run fn once codemirror-vim has finished the current command: at the end of
+// a command vim applies its own selection and unfolds whatever that selection
+// overlaps, which would undo a fold or selection set from inside it. Vim
+// finishes synchronously, so a microtask is late enough; unlike setTimeout it
+// also runs before the next paint and the next key. The view may be gone by
+// then; `destroyed` is EditorView's own (untyped) flag.
+function afterVim(view, fn) {
+  queueMicrotask(() => {
+    if (!view.destroyed) fn();
+  });
 }
 
 // `dd`, `yy`, `cc`, `>>`, `Y` and counts like `3dd` all use the expandToLine
@@ -422,14 +437,15 @@ function pasteMotion(Vim, after) {
     }
     const first = after ? target + 2 : target + 1; // 1-based, in the new doc
     const reclose = after && target !== head.line ? headLine.from : null;
-    setTimeout(() => {
+    afterVim(view, () => {
       const state = view.state;
       const ranges = pastedSubtreeFolds(state, first, first + count - 1);
+      // lineAt needs a position inside the doc.
       if (reclose !== null && reclose <= state.doc.length) {
         ranges.push(sectionRange(state, state.doc.lineAt(reclose)));
       }
       foldRanges(view, ranges);
-    }, 0);
+    });
     return target === head.line ? head : new head.constructor(target, head.ch);
   };
 }
@@ -482,12 +498,7 @@ function orgIndent(cm, args, ranges) {
   // again over the same text. Like org, a promoted heading's fold doesn't grow
   // to take in the sections that are now its children.
   const refold = closed.map((f) => ({ from: tr.changes.mapPos(f.from), to: tr.changes.mapPos(f.to) }));
-  if (refold.length > 0) {
-    setTimeout(() => {
-      const len = view.state.doc.length;
-      foldRanges(view, refold.filter((r) => r.to <= len));
-    }, 0);
-  }
+  if (refold.length > 0) afterVim(view, () => foldRanges(view, refold));
   return new ranges[0].anchor.constructor(first - 1, 0);
 }
 
@@ -724,11 +735,11 @@ module.exports = class EvilOrgPlugin extends Plugin {
       EditorView.updateListener.of((update) => {
         if (!update.selectionSet || !visualLineMode(update.view)) return;
         if (!foldExtendedSelection(update.state)) return;
-        // Vim is still mid-command here; adjust once it has finished. The
-        // change then counts as external, so vim re-syncs its own selection
-        // (used by d/y/c/>) from ours.
+        // Vim is still mid-command here. Adjusting after it finishes makes the
+        // change count as external, so vim re-syncs its own selection (used
+        // by d/y/c/>) from ours.
         const view = update.view;
-        queueMicrotask(() => {
+        afterVim(view, () => {
           if (!visualLineMode(view)) return;
           const next = foldExtendedSelection(view.state);
           if (next) view.dispatch({ selection: EditorSelection.single(next.anchor, next.head) });

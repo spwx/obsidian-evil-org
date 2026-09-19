@@ -48,6 +48,12 @@ npm install
 npm test
 ```
 
+To release, bump `version` in `manifest.json`, commit, then push a tag with the same version (no `v`). The Release workflow runs the tests, attests `main.js` and `manifest.json`, and publishes the GitHub release.
+
+```sh
+git tag 1.0.1 && git push origin 1.0.1
+```
+
 ## License
 
 [MIT](LICENSE)

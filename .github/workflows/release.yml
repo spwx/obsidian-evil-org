@@ -1,0 +1,46 @@
+name: Release
+
+# Push a tag equal to manifest.json's version (e.g. 1.0.1, no "v") to test,
+# attest and publish main.js + manifest.json as a GitHub release.
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Check tag matches manifest version
+        run: |
+          version=$(node -p "require('./manifest.json').version")
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match manifest.json version $version"
+            exit 1
+          fi
+
+      - uses: actions/attest@v4
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" main.js manifest.json --title "$GITHUB_REF_NAME" --generate-notes

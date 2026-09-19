@@ -687,10 +687,10 @@ function swapSpans(view, folds, upper, lower) {
 
 // Command ids and names are user-facing: hotkeys are bound to the ids.
 const COMMANDS = [
-  ["cycle-local", "Cycle fold under cursor (org TAB)", localCycle],
-  ["cycle-global", "Cycle global fold overview (org S-TAB)", globalCycle],
-  ["move-subtree-down", "Move subtree down (org M-↓)", (view) => moveSubtree(view, true, 1)],
-  ["move-subtree-up", "Move subtree up (org M-↑)", (view) => moveSubtree(view, false, 1)],
+  ["cycle-local", "Cycle fold under cursor (TAB in org-mode)", localCycle],
+  ["cycle-global", "Cycle global fold overview (S-TAB in org-mode)", globalCycle],
+  ["move-subtree-down", "Move subtree down (M-↓ in org-mode)", (view) => moveSubtree(view, true, 1)],
+  ["move-subtree-up", "Move subtree up (M-↑ in org-mode)", (view) => moveSubtree(view, false, 1)],
 ];
 
 module.exports = class EvilOrgPlugin extends Plugin {
@@ -723,7 +723,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
         operatorMotionArgs: { visualLine }, context: "visual",
       });
     }
-    // M-j / M-k move the subtree (org M-↓ / M-↑). On macOS vim reads
+    // M-j / M-k move the subtree (M-↓ / M-↑ in org-mode). On macOS vim reads
     // Option-j as <A-j> too.
     Vim.defineAction("orgMoveSubtree", guarded((cm, args) => {
       if (cm.cm6) moveSubtree(cm.cm6, args.forward, args.repeat || 1);
@@ -751,8 +751,9 @@ module.exports = class EvilOrgPlugin extends Plugin {
     });
   }
 
-  // Obsidian's Vim drops the Alt modifier on macOS, so Option-j reaches it as
-  // plain `j`. Catch Alt-j/Alt-k before any editor handler sees them and give
+  // On macOS Option-j arrives as `∆` with code "KeyJ", and some vim builds
+  // strip the Alt modifier rather than restoring it from the code, leaving a
+  // bare `j`. Catch Alt-j/Alt-k before any editor handler sees them and give
   // vim <A-j>/<A-k> directly, which keeps counts and `.` working.
   handleAltMove(e) {
     if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;

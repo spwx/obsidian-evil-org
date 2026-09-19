@@ -541,8 +541,10 @@ test("M-j re-closes folds that run over trailing blank lines", async () => {
   assert.deepEqual(foldedLines(v), [1, 4]);
 });
 
-// macOS Option-j: the key is "∆", the code "KeyJ". Obsidian's Vim would read
-// it as plain `j`, so the event must not reach the editor's own handlers.
+// macOS Option-j: the key is "∆", the code "KeyJ". A vim build that strips the
+// Alt modifier reads that as plain `j`, so the event must not reach the
+// editor's own handlers. jsdom reports no platform, so CodeMirror's isMac is
+// false here: this asserts the plugin intercepts, not that vim would misread.
 function optionKey(view, letter) {
   const event = new window.KeyboardEvent("keydown", {
     key: letter === "j" ? "∆" : "˚", code: letter === "j" ? "KeyJ" : "KeyK",

@@ -5,7 +5,8 @@
   "license": "MIT",
   "scripts": {
     "build": "node --check main.js",
-    "test": "node test/e2e.cjs"
+    "test": "node test/e2e.cjs",
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "@codemirror/commands": "^6.11.1",

@@ -23,7 +23,7 @@ Turn on **Settings → Editor → Vim key bindings**. Every key below works only
 | `Alt-j` / `Alt-k` | On a heading, swap its subtree with the next or previous sibling (org `M-↓`/`M-↑`). It won't cross the parent's boundary. Blank lines between subtrees stay put, and folded subtrees stay folded. A count moves past that many siblings; `.` repeats and `u` undoes in one step. On other lines, move the line, stepping over a folded heading as one line. On macOS, Alt is Option. |
 | `ar` / `ir` | Subtree text objects (evil-org `ar`/`ir`), folded or not. `ar` is the subtree the cursor is in plus trailing blank lines; `ir` is its body, without the heading or surrounding blank lines. Use them with any operator (`dar`, `yar`, `cir`, `>ar`) or in visual mode. A count (`d2ar`), or `ar` again in visual mode, takes in the parent subtree. |
 
-On lines that aren't headings, `>` and `<` indent as usual.
+On lines that aren't headings, `>` and `<` indent as usual. Lines starting with `#` inside fenced code blocks or front matter never count as headings.
 
 Alt-j and Alt-k never reach Obsidian if another app claims them system-wide. Window managers like AeroSpace bind them by default. Either free them in that app, or bind the move commands below to other keys.
 

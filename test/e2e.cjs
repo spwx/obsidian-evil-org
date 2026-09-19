@@ -387,6 +387,30 @@ test(". repeats and u undoes in one step", async () => {
   assert.equal(text(v), DOC);
 });
 
+const CODE = "## A\n```sh\n# comment\n```\n## B\nb";
+
+test(">ar, V> and 3>> leave # lines in code blocks alone", async () => {
+  for (const seq of [">ar", "V3G>", "3>>"]) {
+    const v = open(CODE);
+    await keys(v, seq);
+    assert.equal(text(v), "### A\n```sh\n# comment\n```\n## B\nb", seq);
+  }
+});
+
+test(">> on a # line in front matter indents it, not demotes it", async () => {
+  const v = open("---\n# note: yaml\n---\n## A\na");
+  gotoLine(v, 2);
+  await keys(v, ">>");
+  assert.match(v.state.doc.line(2).text, /^\s+# note: yaml$/);
+});
+
+test("a pasted subtree with a # line in a code block arrives folded", async () => {
+  const v = open(CODE);
+  await keys(v, "yarGp");
+  assert.equal(text(v), CODE + "\n" + CODE.split("\n").slice(0, 4).join("\n"));
+  assert.deepEqual(foldedLines(v), [7]);
+});
+
 test(">> and << on a body line still indent", async () => {
   const v = open(DOC);
   gotoLine(v, 4);

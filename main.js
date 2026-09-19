@@ -7,7 +7,6 @@ const { invertedEffects } = require("@codemirror/commands");
 const { foldable, foldedRanges, foldEffect, unfoldEffect } = require("@codemirror/language");
 
 const HEADING_RE = /^(#+)(\s|$)/;
-const TOP_LEVEL_RE = /^#(\s|$)/;
 
 function getVimState(view, app) {
   try {
@@ -52,24 +51,47 @@ function headingLevel(text) {
   return m ? m[1].length : 0;
 }
 
+const isBlank = (text) => text.trim() === "";
+
+// Heading level of each line (levels[n] for 1-based line n), 0 for lines that
+// aren't headings. `#` lines in front matter or fenced code blocks don't count.
+function headingLevels(doc) {
+  const levels = [0];
+  let close = null;
+  for (let i = 1; i <= doc.lines; i++) {
+    const text = doc.line(i).text;
+    if (close) {
+      if (close.test(text)) close = null;
+      levels.push(0);
+      continue;
+    }
+    const fence = text.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (fence) close = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}\\s*$`);
+    else if (i === 1 && text === "---") close = /^(---|\.\.\.)\s*$/;
+    levels.push(close ? 0 : headingLevel(text));
+  }
+  return levels;
+}
+
 function collectHeadings(state) {
   const out = [];
+  const levels = headingLevels(state.doc);
   for (let i = 1; i <= state.doc.lines; i++) {
+    if (!levels[i]) continue;
     const line = state.doc.line(i);
-    if (!HEADING_RE.test(line.text)) continue;
     const range = foldable(state, line.from, line.to);
-    if (range) out.push({ top: TOP_LEVEL_RE.test(line.text), range });
+    if (range) out.push({ top: levels[i] === 1, range });
   }
   return out;
 }
 
-function directChildFolds(state, line, own) {
-  const level = headingLevel(line.text);
+function directChildFolds(state, levels, line, own) {
+  const level = levels[line.number];
   const out = [];
   for (let i = line.number + 1; i <= state.doc.lines; i++) {
     const l = state.doc.line(i);
     if (l.from >= own.to) break;
-    const lv = headingLevel(l.text);
+    const lv = levels[i];
     if (!lv) continue;
     if (lv <= level) break;
     if (lv === level + 1) {
@@ -85,7 +107,8 @@ function localCycle(view) {
   const head = state.selection.main.head;
   const line = state.doc.lineAt(head);
   const folds = allFolds(state);
-  const level = headingLevel(line.text);
+  const levels = headingLevels(state.doc);
+  const level = levels[line.number];
 
   if (level === 0) {
     const own = foldable(state, line.from, line.to);
@@ -115,7 +138,7 @@ function localCycle(view) {
 
   if (isFolded(folds, own)) {
     const effects = [unfoldEffect.of(own)];
-    for (const c of directChildFolds(state, line, own)) {
+    for (const c of directChildFolds(state, levels, line, own)) {
       if (!isFolded(folds, c)) effects.push(foldEffect.of(c));
     }
     view.dispatch({ effects });
@@ -218,15 +241,15 @@ function deletedFolds(tr) {
 function sectionRange(state, line) {
   const r = foldable(state, line.from, line.to);
   if (r) return r;
-  const level = headingLevel(line.text);
-  if (!level) return null;
   const doc = state.doc;
+  const levels = headingLevels(doc);
+  const level = levels[line.number];
+  if (!level) return null;
   let end = line.to;
   for (let i = line.number + 1; i <= doc.lines; i++) {
-    const l = doc.line(i);
-    const lv = headingLevel(l.text);
+    const lv = levels[i];
     if (lv && lv <= level) break;
-    end = l.to;
+    end = doc.line(i).to;
   }
   return end > line.to ? { from: line.to, to: end } : null;
 }
@@ -240,16 +263,15 @@ function pastedSubtreeFolds(state, first, last) {
   const doc = state.doc;
   if (first < 1 || first > doc.lines) return [];
   last = Math.min(last, doc.lines);
-  const lines = [];
-  for (let i = first; i <= last; i++) lines.push(doc.line(i));
-  const level = headingLevel(lines[0].text);
+  const levels = headingLevels(doc);
+  const level = levels[first];
   if (!level) return [];
-  if (lines.some((l) => { const lv = headingLevel(l.text); return lv && lv < level; })) return [];
-  const end = lines[lines.length - 1].to;
+  for (let i = first; i <= last; i++) if (levels[i] && levels[i] < level) return [];
+  const end = doc.line(last).to;
   const out = [];
-  for (const l of lines) {
-    if (headingLevel(l.text) !== level) continue;
-    const r = sectionRange(state, l);
+  for (let i = first; i <= last; i++) {
+    if (levels[i] !== level) continue;
+    const r = sectionRange(state, doc.line(i));
     if (r && (r.to <= end || doc.sliceString(end, r.to).trim() === "")) out.push(r);
   }
   return out;
@@ -425,16 +447,17 @@ function orgIndent(cm, args, ranges) {
   const state = view.state;
   const doc = state.doc;
   const { first, last } = operatorLines(doc, cm, ranges[0]);
-  if (!headingLevel(doc.line(first).text)) return stockIndent(cm, args, ranges);
+  const levels = headingLevels(doc);
+  if (!levels[first]) return stockIndent(cm, args, ranges);
   const vim = cm.state.vim;
   const steps = vim && vim.visualMode ? args.repeat || 1 : 1;
   const folds = allFolds(state);
   const changes = [];
   const closed = [];
   for (let i = first; i <= last; i++) {
-    const line = doc.line(i);
-    const level = headingLevel(line.text);
+    const level = levels[i];
     if (!level) continue;
+    const line = doc.line(i);
     const next = args.indentRight ? Math.min(6, level + steps) : Math.max(1, level - steps);
     if (next > level) changes.push({ from: line.from, insert: "#".repeat(next - level) });
     else if (next < level) changes.push({ from: line.from, to: line.from + level - next });
@@ -454,28 +477,6 @@ function orgIndent(cm, args, ranges) {
     }, 0);
   }
   return new ranges[0].anchor.constructor(first - 1, 0);
-}
-
-const isBlank = (text) => text.trim() === "";
-
-// Heading level of each line (levels[n] for 1-based line n), 0 for lines that
-// aren't headings. `#` lines in front matter or fenced code blocks don't count.
-function headingLevels(doc) {
-  const levels = [0];
-  let close = null;
-  for (let i = 1; i <= doc.lines; i++) {
-    const text = doc.line(i).text;
-    if (close) {
-      if (close.test(text)) close = null;
-      levels.push(0);
-      continue;
-    }
-    const fence = text.match(/^ {0,3}(`{3,}|~{3,})/);
-    if (fence) close = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}\\s*$`);
-    else if (i === 1 && text === "---") close = /^(---|\.\.\.)\s*$/;
-    levels.push(close ? 0 : headingLevel(text));
-  }
-  return levels;
 }
 
 // Last line of the section of the heading on line h: up to the next heading of

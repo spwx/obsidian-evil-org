@@ -751,6 +751,351 @@ test("var selects the subtree, ar again the parent", async () => {
   assert.equal(text(v), "# Z");
 });
 
+// --- ae / ie -------------------------------------------------------------------
+
+const LIST = "# T\n- a\n  - a1\n  - a2\n    more\n- b\n\nafter";
+
+// The text `y<obj>` yanks with the cursor on line n (and col).
+async function yanked(doc, n, obj, col = 0) {
+  const v = open(doc);
+  v.dispatch({ selection: { anchor: v.state.doc.line(n).from + col } });
+  Vim.getRegisterController().getRegister('"').setText("");
+  await keys(v, "y" + obj);
+  return Vim.getRegisterController().getRegister('"').toString();
+}
+
+test("dae on a list item deletes it and its sub-items, die its text", async () => {
+  let v = open(LIST);
+  gotoLine(v, 2);
+  await keys(v, "dae");
+  assert.equal(text(v), "# T\n- b\n\nafter");
+  v = open(LIST);
+  gotoLine(v, 4);
+  await keys(v, "dae");
+  assert.equal(text(v), "# T\n- a\n  - a1\n- b\n\nafter");
+  v = open(LIST);
+  gotoLine(v, 5); // a continuation line is part of its item
+  await keys(v, "die");
+  assert.equal(text(v), "# T\n- a\n  - a1\n  - \n- b\n\nafter");
+});
+
+test("cie on an item keeps the bullet, number and checkbox", async () => {
+  for (const [doc, want] of [["- [x] done", "- [x] "], ["12. twelve", "12. "], ["\t* star", "\t* "]]) {
+    const v = open(doc);
+    await keys(v, "$cie");
+    assert.ok(insertMode(v), doc);
+    type(v, "new");
+    assert.equal(text(v), want + "new", doc);
+  }
+});
+
+test("ae on the last item takes the trailing blank lines", async () => {
+  const v = open(LIST);
+  gotoLine(v, 6);
+  await keys(v, "dae");
+  assert.equal(text(v), "# T\n- a\n  - a1\n  - a2\n    more\nafter");
+});
+
+test("d2ae deletes the list, d3ae the parent item, d4ae its list", async () => {
+  const want = ["# T\n- a\n- b\n\nafter", "# T\n- b\n\nafter", "# T\nafter", ""];
+  for (const [i, t] of want.entries()) {
+    const v = open(LIST);
+    gotoLine(v, 3);
+    await keys(v, `d${i + 2}ae`);
+    assert.equal(text(v), t, `d${i + 2}ae`);
+  }
+});
+
+test("vae selects the item, ae again the list, then the parent item", async () => {
+  const v = open(LIST);
+  gotoLine(v, 3);
+  await keys(v, "vae");
+  assert.equal(v.state.sliceDoc(v.state.selection.main.from, v.state.selection.main.to), "  - a1");
+  await keys(v, "ae");
+  assert.equal(v.state.sliceDoc(v.state.selection.main.from, v.state.selection.main.to), "  - a1\n  - a2\n    more");
+  await keys(v, "aed");
+  assert.equal(text(v), "# T\n- b\n\nafter");
+});
+
+test("vie selects an item's text, ie again the text of the enclosing list", async () => {
+  const v = open(LIST);
+  gotoLine(v, 3);
+  await keys(v, "vie");
+  const selected = () => v.state.sliceDoc(v.state.selection.main.from, v.state.selection.main.to);
+  assert.equal(selected(), "a1");
+  await keys(v, "ie");
+  assert.equal(selected(), "  - a1\n  - a2\n    more");
+  await keys(v, "ie");
+  assert.equal(selected(), "a\n  - a1\n  - a2\n    more");
+  await keys(v, "d");
+  assert.equal(text(v), "# T\n- \n- b\n\nafter");
+});
+
+test("a list ends at a different bullet or delimiter, and runs over blank lines", async () => {
+  assert.equal(await yanked("- a\n- b\n* c", 1, "2ae"), "- a\n- b\n");
+  assert.equal(await yanked("1. a\n\n2. b\n3) c", 1, "2ae"), "1. a\n\n2. b\n");
+  assert.equal(await yanked("1. a\n\n2. b\n3) c", 1, "ae"), "1. a\n\n");
+});
+
+test("ae and ie on a fenced code block", async () => {
+  const doc = "x\n\n```js\nlet a;\n\nlet b;\n```\n\ny";
+  for (const n of [3, 4, 5, 7]) {
+    assert.equal(await yanked(doc, n, "ae"), "```js\nlet a;\n\nlet b;\n```\n\n", `ae on line ${n}`);
+    assert.equal(await yanked(doc, n, "ie"), "let a;\n\nlet b;\n", `ie on line ${n}`);
+  }
+  let v = open(doc);
+  gotoLine(v, 4);
+  await keys(v, "cie");
+  type(v, "code");
+  assert.equal(text(v), "x\n\n```js\ncode\n```\n\ny");
+});
+
+test("ie on an empty code block does nothing, on an unclosed one runs to the end", async () => {
+  let v = open("```\n```\nx");
+  await keys(v, "die");
+  assert.equal(text(v), "```\n```\nx");
+  await keys(v, "dae");
+  assert.equal(text(v), "x");
+  assert.equal(await yanked("```\na\n## not a heading\n- not an item", 3, "ie"), "a\n## not a heading\n- not an item\n");
+  // Two blocks back to back are two elements.
+  assert.equal(await yanked("```\na\n```\n~~~\nb\n~~~", 5, "ae"), "~~~\nb\n~~~\n");
+});
+
+test("a code block in a list item: ae, then the item, then the list", async () => {
+  const doc = "- a\n  ```\n  - code\n  ```\n- b";
+  assert.equal(await yanked(doc, 3, "ae"), "  ```\n  - code\n  ```\n");
+  assert.equal(await yanked(doc, 3, "2ae"), "- a\n  ```\n  - code\n  ```\n");
+  assert.equal(await yanked(doc, 3, "3ae"), doc + "\n");
+});
+
+test("ae and ie on a table; ie is the rows below the delimiter row", async () => {
+  const doc = "x\n\n" + TABLE + "\n\ny";
+  for (const n of [3, 4, 6]) {
+    assert.equal(await yanked(doc, n, "ae"), TABLE + "\n\n", `ae on line ${n}`);
+    assert.equal(await yanked(doc, n, "ie"), "| Ann  | 30  |\n| Bob  | 4   |\n", `ie on line ${n}`);
+  }
+  const v = open("| a |\n| - |");
+  await keys(v, "die");
+  assert.equal(text(v), "| a |\n| - |");
+});
+
+test("ae and ie on a paragraph", async () => {
+  const doc = "# T\none\ntwo\n\n\nthree";
+  assert.equal(await yanked(doc, 3, "ae"), "one\ntwo\n\n\n");
+  assert.equal(await yanked(doc, 3, "ie"), "one\ntwo\n");
+  // A blank line belongs to the element above it.
+  assert.equal(await yanked(doc, 4, "ae"), "one\ntwo\n\n\n");
+  // A paragraph stops at a list, a quote and a heading.
+  assert.equal(await yanked("a\nb\n- c", 1, "ae"), "a\nb\n");
+  assert.equal(await yanked("> q\na\nb\n# H", 3, "ae"), "a\nb\n");
+});
+
+test("dae on a paragraph in an item deletes the paragraph, die its lines", async () => {
+  const doc = "- a\n\n  para\n  more\n\n- b";
+  let v = open(doc);
+  gotoLine(v, 3);
+  await keys(v, "dae");
+  assert.equal(text(v), "- a\n\n- b");
+  v = open(doc);
+  gotoLine(v, 4);
+  await keys(v, "die");
+  assert.equal(text(v), "- a\n\n\n- b");
+  assert.equal(await yanked(doc, 4, "ie"), "  para\n  more\n");
+  // The item's first line and the lines that go on from it are the item.
+  assert.equal(await yanked("- a\n  more\n\n  para\n- b", 2, "ae"), "- a\n  more\n\n  para\n");
+  v = open(doc);
+  await keys(v, "dae");
+  assert.equal(text(v), "- b");
+});
+
+test("d2ae on a paragraph in an item deletes the item, vae ae grows to it", async () => {
+  const doc = "- a\n\n  para\n- b";
+  let v = open(doc);
+  gotoLine(v, 3);
+  await keys(v, "dae");
+  assert.equal(text(v), "- a\n\n- b");
+  v = open(doc);
+  gotoLine(v, 3);
+  await keys(v, "d2ae");
+  assert.equal(text(v), "- b");
+  assert.equal(await yanked(doc, 3, "3ae"), doc + "\n");
+  v = open(doc);
+  gotoLine(v, 3);
+  await keys(v, "vae");
+  const selected = () => v.state.sliceDoc(v.state.selection.main.from, v.state.selection.main.to);
+  assert.equal(selected(), "  para");
+  await keys(v, "ae");
+  assert.equal(selected(), "- a\n\n  para");
+  await keys(v, "d");
+  assert.equal(text(v), "- b");
+});
+
+test("a paragraph in an item stops at a sub-item and at the end of the item", async () => {
+  const doc = "- a\n\n  para\n  - a1\n- b";
+  assert.equal(await yanked(doc, 3, "ae"), "  para\n");
+  assert.equal(await yanked(doc, 3, "2ae"), "- a\n\n  para\n  - a1\n");
+  assert.equal(await yanked("- a\n\n  para\n  > q", 3, "ae"), "  para\n");
+  assert.equal(await yanked("- a\n\n  para\nout", 3, "ae"), "  para\n");
+});
+
+test("ae and ie on a block quote and a callout", async () => {
+  const doc = "> [!note] Title\n> body\n> more\n\nx";
+  assert.equal(await yanked(doc, 2, "ae"), "> [!note] Title\n> body\n> more\n\n");
+  assert.equal(await yanked(doc, 2, "ie"), "> body\n> more\n");
+  assert.equal(await yanked("> a\n> b\n\n> c", 1, "ie"), "> a\n> b\n");
+  assert.equal(await yanked("> a\n> b\n\n> c", 4, "ae"), "> c\n");
+});
+
+test("ae and ie on front matter", async () => {
+  const doc = "---\ntags: [a]\n# note: yaml\n---\n\n# A";
+  assert.equal(await yanked(doc, 3, "ae"), "---\ntags: [a]\n# note: yaml\n---\n\n");
+  assert.equal(await yanked(doc, 1, "ie"), "tags: [a]\n# note: yaml\n");
+  const v = open(doc);
+  await keys(v, "dae");
+  assert.equal(text(v), "# A");
+});
+
+test("ae on a heading is the heading line, ie its text; a count takes the subtree", async () => {
+  const doc = "# A\n## B  \n\nb\n## C";
+  assert.equal(await yanked(doc, 2, "ae"), "## B  \n\n");
+  assert.equal(await yanked(doc, 2, "ie"), "B  ");
+  assert.equal(await yanked(doc, 2, "2ae"), "## B  \n\nb\n");
+  assert.equal(await yanked(doc, 2, "2ie"), "b\n");
+  assert.equal(await yanked(doc, 2, "3ae"), doc + "\n");
+  const v = open(doc);
+  gotoLine(v, 2);
+  await keys(v, "cie");
+  type(v, "New");
+  assert.equal(text(v), "# A\n## New\n\nb\n## C");
+});
+
+test("after the innermost elements come the subtrees, as with ar", async () => {
+  const doc = DOC + "\n# Z";
+  assert.equal(await yanked(doc, 6, "2ae"), "### C\nc\n");
+  assert.equal(await yanked(doc, 6, "3ae"), "## B\nb\n### C\nc\n");
+  assert.equal(await yanked(doc, 6, "3ie"), "b\n### C\nc\n");
+  let v = open(doc);
+  gotoLine(v, 6);
+  await keys(v, "vaeaeaed");
+  assert.equal(text(v), "# A\na\n## D\nd\n# Z");
+  // A count past the outermost element takes the outermost one.
+  v = open(doc);
+  gotoLine(v, 6);
+  await keys(v, "d9ae");
+  assert.equal(text(v), "# Z");
+});
+
+test("Vae and Vie pick the element, and ie switches to charwise", async () => {
+  let v = open(LIST);
+  gotoLine(v, 6);
+  await keys(v, "Vae");
+  assert.ok(getCM(v).state.vim.visualLine);
+  await keys(v, "d");
+  assert.equal(text(v), "# T\n- a\n  - a1\n  - a2\n    more\nafter");
+  v = open(LIST);
+  gotoLine(v, 6);
+  await keys(v, "Vie");
+  assert.ok(!getCM(v).state.vim.visualLine);
+  await keys(v, "d");
+  assert.equal(text(v), "# T\n- a\n  - a1\n  - a2\n    more\n- \n\nafter");
+});
+
+test("Vae on a heading line selects the line, ae again its subtree", async () => {
+  const v = open(DOC);
+  gotoLine(v, 3);
+  await keys(v, "Vae");
+  assert.equal(v.state.sliceDoc(v.state.selection.main.from, v.state.selection.main.to), "## B");
+  await keys(v, "aex");
+  assert.equal(text(v), "# A\na\n## D\nd");
+});
+
+test("cae changes the lines, yae then p puts them back", async () => {
+  let v = open("x\n\none\ntwo\n\ny");
+  gotoLine(v, 3);
+  await keys(v, "cae");
+  assert.ok(insertMode(v));
+  type(v, "new");
+  assert.equal(text(v), "x\n\nnew\ny");
+  v = open("- a\n- b");
+  await keys(v, "yaejp");
+  assert.equal(text(v), "- a\n- b\n- a");
+});
+
+test(">ae indents a list, >ae on a heading demotes it", async () => {
+  let v = open("- a\n  - a1\n- b");
+  await keys(v, ">ae");
+  assert.equal(text(v), "  - a\n    - a1\n- b");
+  v = open(DOC);
+  gotoLine(v, 3);
+  await keys(v, ">ae");
+  assert.equal(text(v), "# A\na\n### B\nb\n### C\nc\n## D\nd");
+  await keys(v, "<ae");
+  assert.equal(text(v), DOC);
+});
+
+test("dae at the end of the note leaves no blank line, and u undoes it", async () => {
+  const v = open("# A\npara\n\n- a\n- b");
+  gotoLine(v, 5);
+  await keys(v, "d2ae");
+  assert.equal(text(v), "# A\npara\n");
+  await keys(v, "u");
+  assert.equal(text(v), "# A\npara\n\n- a\n- b");
+  gotoLine(v, 2);
+  await keys(v, "dae");
+  assert.equal(text(v), "# A\n- a\n- b");
+  await keys(v, ".");
+  assert.equal(text(v), "# A\n- b");
+});
+
+test("dae on a folded heading deletes the subtree, and u restores it folded", async () => {
+  const v = open(DOC);
+  fold(v, 5);
+  fold(v, 3);
+  gotoLine(v, 3);
+  await keys(v, "dae");
+  assert.equal(text(v), "# A\na\n## D\nd");
+  await keys(v, "u");
+  assert.equal(text(v), DOC);
+  assert.deepEqual(foldedLines(v), [3, 5]);
+});
+
+test("ae on a folded item takes the fold; cie keeps the heading folded", async () => {
+  let v = open("- a\n\t- a1\n\t- a2\n- b");
+  v.dispatch({ effects: foldEffect.of({ from: v.state.doc.line(1).to, to: v.state.doc.line(3).to }) });
+  await keys(v, "dae");
+  assert.equal(text(v), "- b");
+  await keys(v, "u");
+  assert.equal(text(v), "- a\n\t- a1\n\t- a2\n- b");
+  assert.deepEqual(foldedLines(v), [1]);
+  v = open(DOC);
+  fold(v, 3);
+  gotoLine(v, 3);
+  await keys(v, "cie");
+  type(v, "X");
+  await keys(v, "<Esc>");
+  assert.equal(text(v), "# A\na\n## X\nb\n### C\nc\n## D\nd");
+  assert.deepEqual(foldedLines(v), [3]);
+});
+
+test("Vae over a paragraph with a folded code block keeps the fold closed", async () => {
+  const v = open("# A\n- x\n  ```\n  code\n  ```\n- y");
+  fold(v, 3);
+  gotoLine(v, 2);
+  await keys(v, "Vae");
+  assert.deepEqual(foldedLines(v), [3]);
+  await keys(v, "d");
+  assert.equal(text(v), "# A\n- y");
+});
+
+test("ae and ie with nothing around them do nothing", async () => {
+  const v = open("\n\n# A");
+  await keys(v, "daedie");
+  assert.equal(text(v), "\n\n# A");
+  const w = open("#\nx"); // a heading without text
+  await keys(w, "die");
+  assert.equal(text(w), "#\nx");
+});
+
 // --- o / O ---------------------------------------------------------------------
 
 // Insert mode keys are the browser's, not vim's: type text as an edit.
@@ -1161,7 +1506,7 @@ test("unload restores every Vim engine the plugin patched", async () => {
   const installed = calls.length;
   plugin.onunload();
   assert.deepEqual(calls.slice(installed).sort(), [
-    "action orgMoveSubtree", "action orgOpenLine", "motion expandToLine", "motion orgPasteAfter", "motion orgPasteBefore",
+    "action orgMoveSubtree", "action orgOpenLine", "motion expandToLine", "motion orgElement", "motion orgPasteAfter", "motion orgPasteBefore",
     "motion orgSubtree", "operator orgDelete", "operator orgIndent",
   ]);
   // Vim, patched twice, is back to stock: dd on a folded heading deletes one line.
@@ -1195,10 +1540,10 @@ test("after unload, o in a list opens a plain line", async () => {
   assert.equal(text(v), "- a\n\n- b");
 });
 
-test("after unload, M-j and dar do nothing", async () => {
+test("after unload, M-j, dar and dae do nothing", async () => {
   const v = open(DOC);
   gotoLine(v, 3);
-  await keys(v, "<A-j>dar");
+  await keys(v, "<A-j>dardaedie");
   assert.equal(text(v), DOC);
 });
 

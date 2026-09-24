@@ -80,9 +80,10 @@ const isBlank = (text) => text.trim() === "";
 // One scan of the lines (index n for 1-based line n): `levels` holds each
 // line's heading level, 0 for lines that aren't headings, and `code` is true
 // for lines in front matter or fenced code blocks, where `#` lines aren't
-// headings and `-` lines aren't list items. A Text never changes, so the scan
-// is cached per doc: callers ask again freely instead of passing it around.
-// The arrays are shared, hence frozen.
+// headings and `-` lines aren't list items. `blocks` lists those blocks as
+// their first and last lines, and whether a closing line ends them. A Text
+// never changes, so the scan is cached per doc: callers ask again freely
+// instead of passing it around. The arrays are shared, hence frozen.
 const scanCache = new WeakMap();
 
 function scanLines(doc) {
@@ -98,11 +99,17 @@ function headingLevels(doc) {
 function scanDoc(doc) {
   const levels = [0];
   const code = [false];
+  const blocks = [];
   let close = null;
   for (let i = 1; i <= doc.lines; i++) {
     const text = doc.line(i).text;
     if (close) {
-      if (close.test(text)) close = null;
+      const block = blocks[blocks.length - 1];
+      block.last = i;
+      if (close.test(text)) {
+        close = null;
+        block.closed = true;
+      }
       levels.push(0);
       code.push(true);
       continue;
@@ -110,10 +117,11 @@ function scanDoc(doc) {
     const fence = text.match(/^ {0,3}(`{3,}|~{3,})/);
     if (fence) close = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}\\s*$`);
     else if (i === 1 && text === "---") close = /^(---|\.\.\.)\s*$/;
+    if (close) blocks.push({ first: i, last: i, closed: false });
     levels.push(close ? 0 : headingLevel(text));
     code.push(!!close);
   }
-  return { levels: Object.freeze(levels), code: Object.freeze(code) };
+  return { levels: Object.freeze(levels), code: Object.freeze(code), blocks: Object.freeze(blocks.map(Object.freeze)) };
 }
 
 function collectHeadings(state) {
@@ -700,21 +708,33 @@ const ITEM_RE = /^([ \t]*)(?:([-*+])|(\d{1,9})([.)]))(?:[ \t]+(\[.\](?=[ \t]|$))
 // A thematic break such as `- - -` or `* * *` isn't a list item.
 const RULE_RE = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 
-// The list item that starts on line n, or null.
+// The list item that starts on line n, or null. `content` is where its text
+// starts, after the marker, the checkbox and the spaces after them.
 function listItem(doc, n) {
   if (scanLines(doc).code[n]) return null;
   const text = doc.line(n).text;
   const m = !RULE_RE.test(text) && text.match(ITEM_RE);
   if (!m) return null;
-  return { line: n, indent: m[1], bullet: m[2], digits: m[3], delim: m[4], checkbox: !!m[5] };
+  const content = m[0].length + firstNonBlank(text.slice(m[0].length));
+  return { line: n, indent: m[1], bullet: m[2], digits: m[3], delim: m[4], checkbox: !!m[5], content };
 }
 
 // The list item line n is in: the item that starts on it, or the one whose
 // indented body or sub-items it is part of. Null on a blank line or outside a
 // list.
 function enclosingItem(doc, n) {
-  if (isBlank(doc.line(n).text)) return null;
-  let width = Infinity;
+  return isBlank(doc.line(n).text) ? null : itemAbove(doc, n, Infinity);
+}
+
+// The item a sub-item is part of, or null.
+function parentItem(doc, item) {
+  return itemAbove(doc, item.line - 1, item.indent.length);
+}
+
+// The nearest item on line n or above it with an indent less than width,
+// looking past blank lines and lines indented deeper. Null at a line without
+// indent that isn't an item.
+function itemAbove(doc, n, width) {
   for (let i = n; i >= 1; i--) {
     const text = doc.line(i).text;
     if (isBlank(text)) continue;
@@ -761,9 +781,9 @@ function renumberFrom(doc, folds, item, n) {
 // A table's delimiter row, such as `| --- | :-: |`.
 const DELIM_RE = /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
 
-// The table line n is in, as the numbers of its header and delimiter rows, or
-// null. A table is a block of lines with `|` in them whose second line is a
-// delimiter row.
+// The table line n is in, as the numbers of its header, delimiter and last
+// rows, or null. A table is a block of lines with `|` in them whose second
+// line is a delimiter row.
 function enclosingTable(doc, n) {
   const code = scanLines(doc).code;
   const isRow = (i) => !code[i] && doc.line(i).text.includes("|");
@@ -772,7 +792,9 @@ function enclosingTable(doc, n) {
   while (header > 1 && isRow(header - 1)) header--;
   const delim = header + 1;
   if (delim > doc.lines || !isRow(delim) || !DELIM_RE.test(doc.line(delim).text)) return null;
-  return { header, delim };
+  let last = delim;
+  while (last < doc.lines && isRow(last + 1)) last++;
+  return { header, delim, last };
 }
 
 // An empty row shaped like the table row `text`: each cell blanked to its
@@ -780,6 +802,158 @@ function enclosingTable(doc, n) {
 function emptyRow(text) {
   const indent = text.slice(0, firstNonBlank(text));
   return indent + text.slice(indent.length).replace(/\\\||[^|]/g, (m) => " ".repeat(m.length));
+}
+
+// A block quote line; a callout is a quote whose first line is `> [!type]`.
+const QUOTE_RE = /^[ \t]*>/;
+const CALLOUT_RE = /^[ \t]*>[ \t]*\[![^\]]*\]/;
+
+// First and last lines of the list `item` is in: its sibling items, with the
+// same indent and the same bullet or number delimiter, and their sub-items.
+function listSpan(doc, folds, item) {
+  const sibling = (i) => {
+    const other = listItem(doc, i);
+    return other && other.indent === item.indent && other.bullet === item.bullet && other.delim === item.delim;
+  };
+  let first = item.line;
+  for (let i = item.line - 1; i >= 1; i--) {
+    const text = doc.line(i).text;
+    if (isBlank(text) || firstNonBlank(text) > item.indent.length) continue;
+    if (!sibling(i)) break;
+    first = i;
+  }
+  let last = itemEnd(doc, folds, item);
+  for (let i = last + 1; i <= doc.lines; i++) {
+    if (isBlank(doc.line(i).text)) continue;
+    if (!sibling(i)) break;
+    last = i = itemEnd(doc, folds, listItem(doc, i));
+  }
+  return [first, last];
+}
+
+// The Markdown elements that contain line n, innermost first, for `ae`/`ie`:
+// a code block, front matter, heading line, table, block quote or paragraph;
+// then each list item and list around it; then each subtree around it. Each
+// has an `outer` range (its lines and the blank lines after them) and an
+// `inner` one: character offsets for an item's or heading's text, else lines;
+// null if there is nothing inside. Like org, a blank line is part of the
+// element above it. Closed folds count as one line, as for `dd`.
+// Obsidian's syntax tree comes from its own line-by-line markdown mode, with
+// no nodes for lists, items or quotes, and covers only the parsed part of a
+// long note. So this works from the lines, like the other helpers.
+function elementsAt(state, n) {
+  const doc = state.doc;
+  const folds = allFolds(state);
+  const { levels, code, blocks } = scanLines(doc);
+  let m = n;
+  while (m >= 1 && isBlank(doc.line(m).text)) m--;
+  if (m < 1) return [];
+  const lines = (first, last) =>
+    first <= last ? { from: doc.line(first).from, to: doc.line(foldedLastLine(doc, folds, last)).to, linewise: true } : null;
+  const chars = (from, to) => (from < to ? { from, to, linewise: false } : null);
+  const out = [];
+  const add = (first, last, inner) => {
+    let end = foldedLastLine(doc, folds, last);
+    while (end < doc.lines && isBlank(doc.line(end + 1).text)) end++;
+    const outer = lines(first, end);
+    const prev = out[out.length - 1];
+    if (!prev || !sameRange(prev.outer, outer)) out.push({ outer, inner });
+  };
+  const text = (i) => doc.line(i).text;
+  const block = blocks.find((b) => b.first <= m && m <= b.last);
+  const table = !code[m] && enclosingTable(doc, m);
+  let top = m; // the element's first line, where the items around it are found
+  if (block) {
+    add(block.first, block.last, lines(block.first + 1, block.closed ? block.last - 1 : block.last));
+    top = block.first;
+  } else if (levels[m]) {
+    const line = doc.line(m);
+    add(m, m, chars(line.from + line.text.match(/^#+\s*/)[0].length, line.to));
+  } else if (table) {
+    add(table.header, table.last, lines(table.delim + 1, table.last));
+    top = table.header;
+  } else if (QUOTE_RE.test(text(m))) {
+    const quote = (i) => !code[i] && QUOTE_RE.test(text(i));
+    let last = m;
+    while (top > 1 && quote(top - 1)) top--;
+    while (last < doc.lines && quote(last + 1)) last++;
+    add(top, last, lines(CALLOUT_RE.test(text(top)) ? top + 1 : top, last));
+  } else {
+    // A paragraph: the lines around m that aren't blank or another element.
+    // In a list item, only lines of its body; the lines that go on from the
+    // item's first line are the item itself.
+    const item = enclosingItem(doc, m);
+    const plain = (i) => !isBlank(text(i)) && !code[i] && !levels[i] && !QUOTE_RE.test(text(i)) &&
+      !RULE_RE.test(text(i)) && !listItem(doc, i) && !enclosingTable(doc, i) &&
+      (!item || firstNonBlank(text(i)) > item.indent.length);
+    let last = m;
+    if (plain(m)) {
+      while (top > 1 && plain(top - 1)) top--;
+      while (last < doc.lines && plain(last + 1)) last++;
+    }
+    if (!item || (plain(m) && top - 1 !== item.line)) add(top, last, lines(top, last));
+  }
+  for (let item = levels[m] ? null : enclosingItem(doc, top); item; item = parentItem(doc, item)) {
+    const end = itemEnd(doc, folds, item);
+    add(item.line, end, chars(doc.line(item.line).from + item.content, doc.line(end).to));
+    const [first, last] = listSpan(doc, folds, item);
+    add(first, last, lines(first, last));
+  }
+  for (const h of enclosingHeadings(doc, m)) {
+    const last = sectionEnd(doc, h, false);
+    let first = h + 1;
+    while (first <= last && isBlank(text(first))) first++;
+    add(h, last, lines(first, last));
+  }
+  return out;
+}
+
+// `ae`/`ie` text objects (evil-org's `evil-org-an-object` and
+// `evil-org-inner-object`): the element at the cursor (see elementsAt), with
+// the blank lines after it or just its inside. A count, or repeating the text
+// object in visual mode, takes in the enclosing elements.
+function elementTextObject(cm, head, motionArgs, vim) {
+  const doc = cm.cm6.state.doc;
+  const inner = !!motionArgs.textObjectInner;
+  const elements = elementsAt(cm.cm6.state, head.line + 1);
+  if (elements.length === 0) return null;
+  const sel = grownSelection(doc, vim);
+  let range = null;
+  for (let i = Math.min(motionArgs.repeat || 1, elements.length) - 1; i < elements.length; i++) {
+    range = inner ? elements[i].inner : elements[i].outer;
+    if (!range || !sel || !(range.from >= sel.from && range.to <= sel.to)) break;
+  }
+  if (!range) return null;
+  const Pos = head.constructor;
+  const pos = (offset) => {
+    const line = doc.lineAt(offset);
+    return new Pos(line.number - 1, offset - line.from);
+  };
+  if (range.linewise) {
+    if (vim.visualMode) vim.visualLine = true;
+    else motionArgs.linewise = true;
+    return [pos(range.from), new Pos(doc.lineAt(range.to).number - 1, 0)];
+  }
+  // A visual selection includes the character under its head; an operator's
+  // range stops before it.
+  if (vim.visualMode) vim.visualLine = false;
+  return [pos(range.from), pos(vim.visualMode ? range.to - 1 : range.to)];
+}
+
+// The text a visual selection covers, as offsets from its start to the end of
+// its last character, or of its last line in V mode. Null outside visual mode
+// and for a selection just started with `v` or `V`: `ae` there picks the
+// innermost element, and `ae` again (or after another motion) the next one out.
+function grownSelection(doc, vim) {
+  if (!vim.visualMode) return null;
+  const { anchor, head } = vim.sel;
+  const single = anchor.line === head.line && (vim.visualLine || anchor.ch === head.ch);
+  if (single && vim.lastMotion !== elementTextObject) return null;
+  const [start, end] = posBefore(head, anchor) ? [head, anchor] : [anchor, head];
+  const from = doc.line(start.line + 1);
+  const to = doc.line(end.line + 1);
+  if (vim.visualLine) return { from: from.from, to: to.to };
+  return { from: from.from + start.ch, to: Math.min(to.from + end.ch + 1, to.to) };
 }
 
 // Number of blank lines right above line n.
@@ -938,6 +1112,10 @@ module.exports = class EvilOrgPlugin extends Plugin {
     Vim.defineMotion("orgSubtree", subtreeTextObject);
     Vim.mapCommand("ar", "motion", "orgSubtree", {});
     Vim.mapCommand("ir", "motion", "orgSubtree", { textObjectInner: true });
+    // `ae`/`ie` shadow `a<register>`/`i<register>` for `e` the same way.
+    Vim.defineMotion("orgElement", elementTextObject);
+    Vim.mapCommand("ae", "motion", "orgElement", {});
+    Vim.mapCommand("ie", "motion", "orgElement", { textObjectInner: true });
     // `o`/`O` shadow the stock ones. Like those, a count or `.` runs the
     // action again before each repeat of the typed text.
     Vim.defineAction("orgOpenLine", guarded(openLine));
@@ -953,6 +1131,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
       Vim.defineMotion("expandToLine", original);
       Vim.defineAction("orgMoveSubtree", () => {});
       Vim.defineMotion("orgSubtree", () => null);
+      Vim.defineMotion("orgElement", () => null);
       Vim.defineAction("orgOpenLine", function (cm, args, vim) {
         return this.newLineAndEnterInsertMode(cm, args, vim);
       });

@@ -751,6 +751,204 @@ test("var selects the subtree, ar again the parent", async () => {
   assert.equal(text(v), "# Z");
 });
 
+// --- o / O ---------------------------------------------------------------------
+
+// Insert mode keys are the browser's, not vim's: type text as an edit.
+function type(view, s) {
+  view.dispatch(view.state.replaceSelection(s));
+}
+
+const insertMode = (view) => getCM(view).state.vim.insertMode;
+
+test("o and O in a bullet list open a new item", async () => {
+  const v = open("- a\n- b");
+  await keys(v, "o");
+  assert.equal(text(v), "- a\n- \n- b");
+  assert.ok(insertMode(v));
+  assert.equal(v.state.selection.main.head, v.state.doc.line(2).to);
+  type(v, "x");
+  await keys(v, "<Esc>");
+  gotoLine(v, 1);
+  await keys(v, "O");
+  type(v, "y");
+  await keys(v, "<Esc>");
+  assert.equal(text(v), "- y\n- a\n- x\n- b");
+});
+
+test("o keeps the indent and bullet, and adds an empty checkbox", async () => {
+  const v = open("# T\n\t* [x] done\n\t+ plus");
+  gotoLine(v, 2);
+  await keys(v, "o");
+  gotoLine(v, 4);
+  await keys(v, "<Esc>o");
+  assert.equal(text(v), "# T\n\t* [x] done\n\t* [ ] \n\t+ plus\n\t+ ");
+});
+
+test("o in a numbered list numbers the new item and renumbers the rest", async () => {
+  const v = open("1. a\n2. b\n3) c\n\n1. d");
+  await keys(v, "o");
+  assert.equal(text(v), "1. a\n2. \n3. b\n3) c\n\n1. d");
+  await keys(v, "<Esc>");
+  gotoLine(v, 3);
+  await keys(v, "O");
+  assert.equal(text(v), "1. a\n2. \n3. \n4. b\n3) c\n\n1. d");
+});
+
+test("O on the first item of a numbered list at the top of the note", async () => {
+  const v = open("1. a\n2. b");
+  await keys(v, "O");
+  assert.equal(text(v), "1. \n2. a\n3. b");
+  assert.equal(v.state.selection.main.head, 3);
+});
+
+test("a numbered list with blank lines between items is one list", async () => {
+  const v = open("1. a\n\n2. b\n   more\n\n3. c\nafter");
+  await keys(v, "o");
+  assert.equal(text(v), "1. a\n2. \n\n3. b\n   more\n\n4. c\nafter");
+});
+
+test("o opens after the item's sub-items, as a sibling", async () => {
+  const v = open("- a\n\t- a1\n\t\t- a2\n\n\tbody\n- b");
+  await keys(v, "o");
+  assert.equal(text(v), "- a\n\t- a1\n\t\t- a2\n\n\tbody\n- \n- b");
+  await keys(v, "<Esc>");
+  gotoLine(v, 2);
+  await keys(v, "o");
+  assert.equal(text(v), "- a\n\t- a1\n\t\t- a2\n\t- \n\n\tbody\n- \n- b");
+});
+
+test("o on an item's body line opens an item after that item", async () => {
+  const v = open("- a\n  more\n- b");
+  gotoLine(v, 2);
+  await keys(v, "o");
+  assert.equal(text(v), "- a\n  more\n- \n- b");
+});
+
+test("o on the last line of the note opens an item", async () => {
+  const v = open("- a");
+  await keys(v, "o");
+  assert.equal(text(v), "- a\n- ");
+  assert.equal(v.state.selection.main.head, 6);
+});
+
+test("o on a folded item opens after its sub-items and keeps it folded", async () => {
+  const v = open("- a\n\t- a1\n- b");
+  v.dispatch({ effects: foldEffect.of({ from: v.state.doc.line(1).to, to: v.state.doc.line(2).to }) });
+  await keys(v, "o");
+  assert.equal(text(v), "- a\n\t- a1\n- \n- b");
+  assert.deepEqual(foldedLines(v), [1]);
+});
+
+test("a count opens that many items, and . opens more", async () => {
+  const v = open("1. a\n2. b");
+  await keys(v, "3o");
+  type(v, "x");
+  await keys(v, "<Esc>");
+  assert.equal(text(v), "1. a\n2. x\n3. x\n4. x\n5. b");
+  await keys(v, ".");
+  assert.equal(text(v), "1. a\n2. x\n3. x\n4. x\n5. x\n6. b");
+});
+
+test("u undoes the new item and the renumbering in one step", async () => {
+  const v = open("1. a\n2. b\n3. c");
+  await keys(v, "o<Esc>u");
+  assert.equal(text(v), "1. a\n2. b\n3. c");
+});
+
+test("o on a folded heading opens below the fold", async () => {
+  const v = open(DOC);
+  fold(v, 3);
+  gotoLine(v, 3);
+  await keys(v, "o");
+  assert.equal(text(v), "# A\na\n## B\nb\n### C\nc\n\n## D\nd");
+  assert.equal(cursorLine(v), 7);
+  assert.deepEqual(foldedLines(v), [3]);
+});
+
+test("O below a folded heading opens above the line, not in the fold", async () => {
+  const v = open(DOC);
+  fold(v, 3);
+  gotoLine(v, 7);
+  await keys(v, "O");
+  assert.equal(text(v), "# A\na\n## B\nb\n### C\nc\n\n## D\nd");
+  assert.equal(cursorLine(v), 7);
+  assert.deepEqual(foldedLines(v), [3]);
+});
+
+const TABLE = "| Name | Age |\n| ---- | :-: |\n| Ann  | 30  |\n| Bob  | 4   |";
+
+test("o and O in a table open an empty row, cursor in the first cell", async () => {
+  const v = open(TABLE);
+  gotoLine(v, 3);
+  await keys(v, "o");
+  assert.equal(v.state.doc.line(4).text, "|      |     |");
+  assert.ok(insertMode(v));
+  assert.equal(v.state.selection.main.head, v.state.doc.line(4).from + 2);
+  type(v, "Cy");
+  await keys(v, "<Esc>");
+  gotoLine(v, 3);
+  await keys(v, "O");
+  assert.equal(text(v), "| Name | Age |\n| ---- | :-: |\n|      |     |\n| Ann  | 30  |\n| Cy     |     |\n| Bob  | 4   |");
+});
+
+test("o on the header or delimiter row opens the first body row", async () => {
+  for (const n of [1, 2]) {
+    const v = open(TABLE);
+    gotoLine(v, n);
+    await keys(v, "o");
+    assert.equal(v.state.doc.line(3).text, "|      |     |", `line ${n}`);
+    assert.equal(v.state.doc.line(4).text, "| Ann  | 30  |", `line ${n}`);
+  }
+});
+
+test("O on the header or delimiter row opens a plain line above the table", async () => {
+  for (const n of [1, 2]) {
+    const v = open("x\n" + TABLE);
+    gotoLine(v, n + 1);
+    await keys(v, "O");
+    assert.equal(text(v), "x\n\n" + TABLE, `line ${n}`);
+  }
+});
+
+test("table rows keep their indent, escaped pipes, and rows without outer pipes", async () => {
+  let v = open("- list\n\t| a \\| b | c |\n\t| --- | --- |");
+  gotoLine(v, 2);
+  await keys(v, "o");
+  assert.equal(v.state.doc.line(4).text, "\t|        |   |");
+  assert.equal(v.state.selection.main.head, v.state.doc.line(4).from + 3);
+  v = open("a | b\n--|--\n1 | 2");
+  gotoLine(v, 3);
+  await keys(v, "o");
+  assert.equal(v.state.doc.line(4).text, "  |  ");
+  assert.equal(v.state.selection.main.head, v.state.doc.line(4).from);
+});
+
+test("a count opens that many table rows", async () => {
+  const v = open("| a |\n| - |\n| 1 |");
+  gotoLine(v, 3);
+  await keys(v, "2o<Esc>");
+  assert.equal(text(v), "| a |\n| - |\n| 1 |\n|   |\n|   |");
+});
+
+test("a | line without a delimiter row isn't a table", async () => {
+  const v = open("a | b\nc | d");
+  await keys(v, "o");
+  assert.equal(text(v), "a | b\n\nc | d");
+});
+
+test("o and O outside lists open plain lines", async () => {
+  const v = open("# A\ntext\n---\n- - -\n```\n- code\n```");
+  for (const n of [1, 2, 4]) {
+    gotoLine(v, n);
+    await keys(v, "o");
+    assert.equal(v.state.doc.line(n + 1).text, "", `line ${n}`);
+    await keys(v, "<Esc>u");
+  }
+  gotoLine(v, 6);
+  await keys(v, "O");
+  assert.equal(v.state.doc.line(6).text, "");
+});
+
 // --- commands --------------------------------------------------------------------
 
 const runCommand = (id, view) => plugin.commands.find((c) => c.id === id).editorCallback({ cm: view });
@@ -840,7 +1038,7 @@ test("unload restores every Vim engine the plugin patched", async () => {
   const installed = calls.length;
   plugin.onunload();
   assert.deepEqual(calls.slice(installed).sort(), [
-    "action orgMoveSubtree", "motion expandToLine", "motion orgPasteAfter", "motion orgPasteBefore",
+    "action orgMoveSubtree", "action orgOpenLine", "motion expandToLine", "motion orgPasteAfter", "motion orgPasteBefore",
     "motion orgSubtree", "operator orgDelete", "operator orgIndent",
   ]);
   // Vim, patched twice, is back to stock: dd on a folded heading deletes one line.
@@ -866,6 +1064,12 @@ test("after unload, d deletes as stock vim does", async () => {
   gotoLine(v, 6);
   await keys(v, "VGd");
   assert.equal(text(v), "# A\na\n## B\nb\n### C\n");
+});
+
+test("after unload, o in a list opens a plain line", async () => {
+  const v = open("- a\n- b");
+  await keys(v, "o");
+  assert.equal(text(v), "- a\n\n- b");
 });
 
 test("after unload, M-j and dar do nothing", async () => {

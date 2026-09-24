@@ -23,6 +23,7 @@ The keys in the table that follows operate only in Vim normal mode and Vim visua
 | `>>` / `<<` | On a heading, these keys demote or promote the heading. They add or remove one `#`. They do not indent the line. If the heading is folded, all of the subtree changes level (`M-S-→` in org-mode). If the heading is open, only the heading changes level (`M-→` in org-mode). The level stays between 1 and 6. The plugin does not change body lines. |
 | `3>>`, `V>`, `.` | All headings in the range change level. You can repeat the change with `.`. One `u` undoes all of the change. |
 | `Alt-j` / `Alt-k` | On a heading, these keys exchange its subtree with the next or previous sibling (`M-↓`/`M-↑` in org-mode). The subtree does not move out of its parent. Blank lines between subtrees do not move. Folded subtrees stay folded. With a count, the subtree moves past that number of siblings. `.` repeats the move, and one `u` undoes it. On other lines, these keys move the line. They move over a folded heading as one line. On macOS, the Alt key is the Option key. |
+| `o` / `O` | In a list, these keys open a new item below or above the item at the cursor (`evil-org-open-below`/`-above`). The new item has the same indent and bullet. In a numbered list, it gets the next number, and the plugin renumbers the items after it. If the item has a checkbox, the new item gets an empty checkbox. `o` opens the new item after the sub-items of the item, as in org-mode. In a table, `o` and `O` open an empty row below or above the row at the cursor, with the same cells. Each cell keeps its width, so an aligned table stays aligned. The cursor goes in the first cell. On the header row, `o` opens the first row below the delimiter row, and `O` opens a usual line above the table. On a folded heading or item, `o` opens the line below the fold, not in it. A count (`3o`) and `.` open more items or rows. |
 | `ar` / `ir` | Text objects for a subtree (evil-org `ar`/`ir`). They operate on folded and open subtrees. `ar` is the subtree that contains the cursor, plus the blank lines after it. `ir` is the body of that subtree. It does not include the heading or the blank lines around it. You can use them with all operators (`dar`, `yar`, `cir`, `>ar`) and in visual mode. With a count (`d2ar`), or when you type `ar` again in visual mode, the selection includes the parent subtree. |
 
 On lines that are not headings, `>` and `<` indent the line as in standard Vim. In fenced code blocks and front matter, a line that starts with `#` is not a heading.
@@ -58,7 +59,7 @@ To install the plugin manually:
 Obsidian does not have a public API for its Vim mode. For this reason, the plugin changes the Vim engine that Obsidian makes available at `window.CodeMirrorAdapter.Vim`. The plugin makes these changes:
 
 - It changes the `expandToLine` motion so that the motion includes folded lines.
-- It maps `p`, `P`, `d`, `>`, `<`, `<A-j>`, `<A-k>`, `ar`, and `ir`. In visual mode, it also maps `x`, `X`, and `D`.
+- It maps `o`, `O`, `p`, `P`, `d`, `>`, `<`, `<A-j>`, `<A-k>`, `ar`, and `ir`. In visual mode, it also maps `x`, `X`, and `D`.
 - It gets `Alt-j` and `Alt-k` by their key codes in Vim normal mode, before the editor gets them. On macOS, the Vim mode of Obsidian can lose the Alt modifier. For example, `Option-j` gives `∆`.
 - It gets the CodeMirror 6 view from `editor.cm`.
 

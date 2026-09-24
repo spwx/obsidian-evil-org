@@ -44,9 +44,9 @@ function vimIdle(view) {
 // fn, logging instead of throwing: an exception escaping a keymap, command or
 // vim action would abort the key half-way and surface as an Obsidian error.
 function guarded(fn) {
-  return (...args) => {
+  return function (...args) {
     try {
-      return fn(...args);
+      return fn.apply(this, args);
     } catch (e) {
       console.error("Evil Org:", e);
       return false;
@@ -77,34 +77,43 @@ function headingLevel(text) {
 
 const isBlank = (text) => text.trim() === "";
 
-// Heading level of each line (levels[n] for 1-based line n), 0 for lines that
-// aren't headings. `#` lines in front matter or fenced code blocks don't count.
-// A Text never changes, so the scan is cached per doc: callers ask again freely
-// instead of passing levels around. The array is shared, hence frozen.
-const levelCache = new WeakMap();
+// One scan of the lines (index n for 1-based line n): `levels` holds each
+// line's heading level, 0 for lines that aren't headings, and `code` is true
+// for lines in front matter or fenced code blocks, where `#` lines aren't
+// headings and `-` lines aren't list items. A Text never changes, so the scan
+// is cached per doc: callers ask again freely instead of passing it around.
+// The arrays are shared, hence frozen.
+const scanCache = new WeakMap();
 
-function headingLevels(doc) {
-  let levels = levelCache.get(doc);
-  if (!levels) levelCache.set(doc, (levels = Object.freeze(scanHeadingLevels(doc))));
-  return levels;
+function scanLines(doc) {
+  let scan = scanCache.get(doc);
+  if (!scan) scanCache.set(doc, (scan = scanDoc(doc)));
+  return scan;
 }
 
-function scanHeadingLevels(doc) {
+function headingLevels(doc) {
+  return scanLines(doc).levels;
+}
+
+function scanDoc(doc) {
   const levels = [0];
+  const code = [false];
   let close = null;
   for (let i = 1; i <= doc.lines; i++) {
     const text = doc.line(i).text;
     if (close) {
       if (close.test(text)) close = null;
       levels.push(0);
+      code.push(true);
       continue;
     }
     const fence = text.match(/^ {0,3}(`{3,}|~{3,})/);
     if (fence) close = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}\\s*$`);
     else if (i === 1 && text === "---") close = /^(---|\.\.\.)\s*$/;
     levels.push(close ? 0 : headingLevel(text));
+    code.push(!!close);
   }
-  return levels;
+  return { levels: Object.freeze(levels), code: Object.freeze(code) };
 }
 
 function collectHeadings(state) {
@@ -685,6 +694,147 @@ function swapSpans(view, folds, upper, lower) {
   foldRanges(view, [...headingFolds.map((pos) => sectionRange(next, next.doc.lineAt(pos))), ...otherFolds]);
 }
 
+// A list item's first line: indent, a bullet (`-`, `*`, `+`) or a number with
+// `.` or `)`, then a space or the end of the line, then maybe a checkbox.
+const ITEM_RE = /^([ \t]*)(?:([-*+])|(\d{1,9})([.)]))(?:[ \t]+(\[.\](?=[ \t]|$))?|$)/;
+// A thematic break such as `- - -` or `* * *` isn't a list item.
+const RULE_RE = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
+
+// The list item that starts on line n, or null.
+function listItem(doc, n) {
+  if (scanLines(doc).code[n]) return null;
+  const text = doc.line(n).text;
+  const m = !RULE_RE.test(text) && text.match(ITEM_RE);
+  if (!m) return null;
+  return { line: n, indent: m[1], bullet: m[2], digits: m[3], delim: m[4], checkbox: !!m[5] };
+}
+
+// The list item line n is in: the item that starts on it, or the one whose
+// indented body or sub-items it is part of. Null on a blank line or outside a
+// list.
+function enclosingItem(doc, n) {
+  if (isBlank(doc.line(n).text)) return null;
+  let width = Infinity;
+  for (let i = n; i >= 1; i--) {
+    const text = doc.line(i).text;
+    if (isBlank(text)) continue;
+    const indent = firstNonBlank(text);
+    if (indent >= width) continue;
+    const item = listItem(doc, i);
+    if (item || indent === 0) return item;
+    width = indent;
+  }
+  return null;
+}
+
+// Last line of an item: its indented body and sub-items, without trailing
+// blank lines, and any closed fold on its first line.
+function itemEnd(doc, folds, item) {
+  let last = item.line;
+  for (let i = item.line + 1; i <= doc.lines; i++) {
+    const text = doc.line(i).text;
+    if (isBlank(text)) continue;
+    if (firstNonBlank(text) <= item.indent.length) break;
+    last = i;
+  }
+  return Math.max(last, foldedLastLine(doc, folds, item.line));
+}
+
+// Changes that add one to the number of each item of the ordered list `item`
+// is in, from the one starting on line n to the end of the list.
+function renumberFrom(doc, folds, item, n) {
+  const changes = [];
+  for (let i = n; i <= doc.lines; ) {
+    if (isBlank(doc.line(i).text)) {
+      i++;
+      continue;
+    }
+    const next = listItem(doc, i);
+    if (!next || next.indent !== item.indent || next.delim !== item.delim) break;
+    const from = doc.line(i).from + next.indent.length;
+    changes.push({ from, to: from + next.digits.length, insert: String(Number(next.digits) + 1) });
+    i = itemEnd(doc, folds, next) + 1;
+  }
+  return changes;
+}
+
+// A table's delimiter row, such as `| --- | :-: |`.
+const DELIM_RE = /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
+
+// The table line n is in, as the numbers of its header and delimiter rows, or
+// null. A table is a block of lines with `|` in them whose second line is a
+// delimiter row.
+function enclosingTable(doc, n) {
+  const code = scanLines(doc).code;
+  const isRow = (i) => !code[i] && doc.line(i).text.includes("|");
+  if (!isRow(n)) return null;
+  let header = n;
+  while (header > 1 && isRow(header - 1)) header--;
+  const delim = header + 1;
+  if (delim > doc.lines || !isRow(delim) || !DELIM_RE.test(doc.line(delim).text)) return null;
+  return { header, delim };
+}
+
+// An empty row shaped like the table row `text`: each cell blanked to its
+// width, so an aligned table stays aligned.
+function emptyRow(text) {
+  const indent = text.slice(0, firstNonBlank(text));
+  return indent + text.slice(indent.length).replace(/\\\||[^|]/g, (m) => " ".repeat(m.length));
+}
+
+// `o`/`O` (evil-org-open-below/above). In a table, open an empty row below or
+// above the row, with the cursor in its first cell; `o` on the header opens
+// the first row under the delimiter row, and `O` there opens a plain line above
+// the table. In a list item, open a new item after the item and its
+// sub-items, or before the item: same indent and bullet, the next number
+// (renumbering the items after it), and an empty checkbox if the item has one.
+// On a closed fold `o` opens a line below the whole fold, not inside it.
+// Elsewhere `o`/`O` are the stock ones. Vim calls actions as methods of its
+// action table, so `this` holds the stock actions.
+function openLine(cm, args, vim) {
+  const view = cm.cm6;
+  if (!view) return this.newLineAndEnterInsertMode(cm, args, vim);
+  const state = view.state;
+  const doc = state.doc;
+  const folds = allFolds(state);
+  const n = doc.lineAt(state.selection.main.head).number;
+  const lineText = doc.line(n).text;
+  const indent = lineText.slice(0, firstNonBlank(lineText));
+  const table = enclosingTable(doc, n);
+  const item = !table && enclosingItem(doc, n);
+  let target, text, col;
+  let renumber = [];
+  if (table && n <= table.delim && !args.after) {
+    target = table.header;
+    text = indent;
+  } else if (table) {
+    target = n <= table.delim ? table.delim : n;
+    text = emptyRow(lineText);
+    col = indent.length + text.slice(indent.length).match(/^(?:\| ?)?/)[0].length;
+  } else if (item) {
+    target = args.after ? itemEnd(doc, folds, item) : item.line;
+    const marker = item.delim ? `${Number(item.digits) + (args.after ? 1 : 0)}${item.delim}` : item.bullet;
+    text = `${item.indent}${marker} ${item.checkbox ? "[ ] " : ""}`;
+    if (item.delim) renumber = renumberFrom(doc, folds, item, args.after ? target + 1 : item.line);
+  } else {
+    target = args.after ? foldedLastLine(doc, folds, n) : n;
+    if (target === n) return this.newLineAndEnterInsertMode(cm, args, vim);
+    text = indent;
+  }
+  if (col === undefined) col = text.length;
+  // Insert at the start of the line after the new one where possible: the end
+  // of the line before it may be the end of a closed fold.
+  const insert = args.after && target === doc.lines
+    ? { from: doc.length, insert: "\n" + text }
+    : { from: doc.line(args.after ? target + 1 : target).from, insert: text + "\n" };
+  const changes = state.changes([insert, ...renumber]);
+  const newLine = args.after ? target + 1 : target;
+  const cursor = changes.apply(doc).line(newLine).from + col;
+  view.dispatch({ changes, selection: { anchor: cursor }, scrollIntoView: true, userEvent: "input" });
+  const head = new cm.constructor.Pos(newLine - 1, col);
+  this.enterInsertMode(cm, { repeat: args.repeat, head }, vim);
+}
+
 // Command ids and names are user-facing: hotkeys are bound to the ids.
 const COMMANDS = [
   ["cycle-local", "Cycle fold under cursor (TAB in org-mode)", localCycle],
@@ -735,6 +885,13 @@ module.exports = class EvilOrgPlugin extends Plugin {
     Vim.defineMotion("orgSubtree", subtreeTextObject);
     Vim.mapCommand("ar", "motion", "orgSubtree", {});
     Vim.mapCommand("ir", "motion", "orgSubtree", { textObjectInner: true });
+    // `o`/`O` shadow the stock ones. Like those, a count or `.` runs the
+    // action again before each repeat of the typed text.
+    Vim.defineAction("orgOpenLine", guarded(openLine));
+    for (const [key, after] of [["o", true], ["O", false]]) {
+      Vim.mapCommand(key, "action", "orgOpenLine", { after },
+        { isEdit: true, interlaceInsertRepeat: true, context: "normal" });
+    }
     // Every engine patched keeps the overrides until unload, not just the
     // current one. Unload runs these last-first, so an engine patched twice
     // (swapped out and back) ends up with its stock originals.
@@ -743,6 +900,9 @@ module.exports = class EvilOrgPlugin extends Plugin {
       Vim.defineMotion("expandToLine", original);
       Vim.defineAction("orgMoveSubtree", () => {});
       Vim.defineMotion("orgSubtree", () => null);
+      Vim.defineAction("orgOpenLine", function (cm, args, vim) {
+        return this.newLineAndEnterInsertMode(cm, args, vim);
+      });
       // Keymap entries can't be removed, so make them behave like the stock ones.
       Vim.defineMotion("orgPasteAfter", (_cm, head) => head);
       Vim.defineMotion("orgPasteBefore", (_cm, head) => head);

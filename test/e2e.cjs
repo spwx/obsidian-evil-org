@@ -679,6 +679,226 @@ test("M-j on the last line and M-k on the first line do nothing", async () => {
   assert.equal(cursorLine(v), 1);
 });
 
+// --- M-j / M-k on list items ---------------------------------------------------------
+
+// Fold the sub-items of the item on line n, through line last.
+function foldItem(view, n, last) {
+  view.dispatch({ effects: foldEffect.of({ from: view.state.doc.line(n).to, to: view.state.doc.line(last).to }) });
+}
+
+test("M-j swaps a list item and its sub-items with the next item, M-k swaps it back", async () => {
+  const doc = "# T\n- a\n  - a1\n  more\n- b\n  - b1\n- c";
+  const v = open(doc);
+  gotoLine(v, 2);
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "# T\n- b\n  - b1\n- a\n  - a1\n  more\n- c");
+  assert.equal(cursorLine(v), 4);
+  await keys(v, "<A-k>");
+  assert.equal(text(v), doc);
+  assert.equal(cursorLine(v), 2);
+});
+
+test("M-j on a sub-item or a body line moves the item it is in", async () => {
+  let v = open("- a\n  - a1\n  - a2\n- b");
+  gotoLine(v, 2);
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "- a\n  - a2\n  - a1\n- b");
+  assert.equal(cursorLine(v), 3);
+  v = open("- a\n  more\n- b");
+  gotoLine(v, 2);
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "- b\n- a\n  more");
+  assert.equal(cursorLine(v), 3);
+});
+
+test("an item doesn't move out of its parent item or its list", async () => {
+  const doc = "text\n- a\n  - a1\n  - a2\n- b\n* c\n\nafter";
+  const v = open(doc);
+  for (const [n, seq] of [[2, "<A-k>"], [3, "<A-k>"], [4, "<A-j>"], [5, "<A-j>"], [6, "<A-j><A-k>"]]) {
+    gotoLine(v, n);
+    await keys(v, seq);
+    assert.equal(text(v), doc, `${seq} on line ${n}`);
+  }
+});
+
+test("M-j keeps blank lines between items in place", async () => {
+  const v = open("- a\n\n- b\n  b more\n\n- c");
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "- b\n  b more\n\n- a\n\n- c");
+  gotoLine(v, 6);
+  await keys(v, "<A-k>");
+  assert.equal(text(v), "- b\n  b more\n\n- c\n\n- a");
+});
+
+test("M-j keeps a folded item folded, through u", async () => {
+  const doc = "- a\n\t- a1\n\t- a2\n- b\n\t- b1";
+  const v = open(doc);
+  foldItem(v, 1, 3);
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "- b\n\t- b1\n- a\n\t- a1\n\t- a2");
+  assert.deepEqual(foldedLines(v), [3]);
+  assert.equal(cursorLine(v), 3);
+  await keys(v, "u");
+  assert.equal(text(v), doc);
+  assert.deepEqual(foldedLines(v), [1]);
+});
+
+test("a count moves an item past that many items, and . repeats it", async () => {
+  const v = open("- a\n- b\n- c\n- d\n- e");
+  await keys(v, "2<A-j>");
+  assert.equal(text(v), "- b\n- c\n- a\n- d\n- e");
+  await keys(v, ".");
+  assert.equal(text(v), "- b\n- c\n- d\n- e\n- a");
+  await keys(v, "u");
+  assert.equal(text(v), "- b\n- c\n- a\n- d\n- e");
+});
+
+test("M-j and M-k renumber a numbered list from its first number", async () => {
+  let v = open("1. a\n2. b\n3. c");
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "1. b\n2. a\n3. c");
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "1. b\n2. c\n3. a");
+  await keys(v, "u");
+  assert.equal(text(v), "1. b\n2. a\n3. c");
+  v = open("8. a\n   1. a1\n   2. a2\n\n9. b\n10. c");
+  gotoLine(v, 6);
+  await keys(v, "2<A-k>");
+  // The blank line between the items passed over moves with them.
+  assert.equal(text(v), "8. c\n9. a\n   1. a1\n   2. a2\n\n10. b");
+  assert.equal(cursorLine(v), 1);
+  gotoLine(v, 3);
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "8. c\n9. a\n   1. a2\n   2. a1\n\n10. b");
+});
+
+test("M-j moves checkbox items in a tab-indented list", async () => {
+  const v = open("- [ ] a\n\t- [x] a1\n- [x] b");
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "- [x] b\n- [ ] a\n\t- [x] a1");
+});
+
+// --- >> / << on list items -------------------------------------------------------------
+
+test(">> puts an item and its sub-items under the item above, << takes them back", async () => {
+  const doc = "- a\n- b\n  - b1\n  more\n- c";
+  const v = open(doc);
+  gotoLine(v, 2);
+  await keys(v, ">>");
+  assert.equal(text(v), "- a\n  - b\n    - b1\n    more\n- c");
+  assert.equal(v.state.selection.main.head, v.state.doc.line(2).from + 2);
+  await keys(v, "<<");
+  assert.equal(text(v), doc);
+});
+
+test("<< on a top-level item does nothing, on a nested one takes it out one level", async () => {
+  let v = open("- a\n  - b\n    - c");
+  await keys(v, "<<");
+  assert.equal(text(v), "- a\n  - b\n    - c");
+  gotoLine(v, 3);
+  await keys(v, "<<");
+  assert.equal(text(v), "- a\n  - b\n  - c");
+  // The items after it become its sub-items.
+  v = open("- p\n  - x\n  - y\n  - z");
+  gotoLine(v, 3);
+  await keys(v, "<<");
+  assert.equal(text(v), "- p\n  - x\n- y\n  - z");
+});
+
+test(">> joins the sub-items of the item above, with their indent", async () => {
+  let v = open("- a\n\t- a1\n- b\n\t- b1");
+  gotoLine(v, 3);
+  await keys(v, ">>");
+  assert.equal(text(v), "- a\n\t- a1\n\t- b\n\t\t- b1");
+  v = open("- a\n    - a1\n- b");
+  gotoLine(v, 3);
+  await keys(v, ">>");
+  assert.equal(text(v), "- a\n    - a1\n    - b");
+});
+
+test(">> indents with a tab if the note's lists do, else to the text of the item above", async () => {
+  let v = open("- a\n\t- x\n\n- b\n- c");
+  gotoLine(v, 5);
+  await keys(v, ">>");
+  assert.equal(text(v), "- a\n\t- x\n\n- b\n\t- c");
+  v = open("1. a\n2. b\n\n* [ ] c\n* [ ] d\n\n10) e\n11) f");
+  for (const n of [2, 5, 8]) {
+    gotoLine(v, n);
+    await keys(v, ">>");
+  }
+  assert.equal(text(v), "1. a\n   1. b\n\n* [ ] c\n  * [ ] d\n\n10) e\n    1) f");
+});
+
+test(">> and << renumber the numbered lists the item leaves and joins", async () => {
+  const doc = "1. a\n   1. a1\n2. b\n   more\n3. c\n4. d";
+  const v = open(doc);
+  gotoLine(v, 3);
+  await keys(v, ">>");
+  assert.equal(text(v), "1. a\n   1. a1\n   2. b\n      more\n2. c\n3. d");
+  await keys(v, "<<");
+  assert.equal(text(v), doc);
+  // Outdented, it follows its parent; the items after it become its sub-items
+  // and start at 1.
+  const w = open("1. p\n   1. x\n   2. y\n   3. z\n2. q");
+  gotoLine(w, 3);
+  await keys(w, "<<");
+  assert.equal(text(w), "1. p\n   1. x\n2. y\n   1. z\n3. q");
+});
+
+test(">> on a folded item shifts it with its sub-items and keeps it folded", async () => {
+  const v = open("- a\n- [x] b\n\t- b1\n\t\t- b2\n- c");
+  foldItem(v, 2, 4);
+  gotoLine(v, 2);
+  await keys(v, ">>");
+  assert.equal(text(v), "- a\n\t- [x] b\n\t\t- b1\n\t\t\t- b2\n- c");
+  assert.deepEqual(foldedLines(v), [2]);
+  await keys(v, "u");
+  assert.equal(text(v), "- a\n- [x] b\n\t- b1\n\t\t- b2\n- c");
+  assert.deepEqual(foldedLines(v), [2]);
+});
+
+test("3>>, V> and . shift items alike, and u undoes each in one step", async () => {
+  const doc = "- p\n- a\n  - a1\n- b\n- c";
+  let v = open(doc);
+  gotoLine(v, 2);
+  await keys(v, "3>>");
+  assert.equal(text(v), "- p\n  - a\n    - a1\n  - b\n- c");
+  await keys(v, "u");
+  assert.equal(text(v), doc);
+  v = open(doc);
+  gotoLine(v, 2);
+  await keys(v, "V5G>");
+  assert.equal(text(v), "- p\n  - a\n    - a1\n  - b\n  - c");
+  await keys(v, "u");
+  assert.equal(text(v), doc);
+  gotoLine(v, 4);
+  await keys(v, ">>");
+  gotoLine(v, 5);
+  await keys(v, ".");
+  assert.equal(text(v), "- p\n- a\n  - a1\n  - b\n  - c");
+  await keys(v, "u");
+  assert.equal(text(v), "- p\n- a\n  - a1\n  - b\n- c");
+});
+
+test("V< with a count outdents items that many levels, not past the top", async () => {
+  const v = open("- a\n  - b\n    - c\n      - d");
+  gotoLine(v, 3);
+  await keys(v, "V4G2<");
+  assert.equal(text(v), "- a\n  - b\n- c\n  - d");
+  gotoLine(v, 3);
+  await keys(v, "V4G3<");
+  assert.equal(text(v), "- a\n  - b\n- c\n- d");
+});
+
+test(">> on an item's body line or next to a list indents the line as usual", async () => {
+  const v = open("- a\n  more\npara");
+  for (const n of [2, 3]) {
+    gotoLine(v, n);
+    await keys(v, ">>");
+  }
+  assert.equal(text(v), "- a\n    more\n  para");
+});
+
 // --- ar / ir -------------------------------------------------------------------
 
 test("dar deletes the subtree around the cursor, dir its body", async () => {
@@ -1439,6 +1659,30 @@ test("commands run in normal and insert mode, not in visual mode", async () => {
   runCommand("cycle-global", v);
   assert.equal(text(v), "# A\na\n## D\nd\n## B\nb\n### C\nc");
   assert.deepEqual(foldedLines(v), [5]);
+});
+
+test("the move commands move list items, without vim too, and u undoes them", () => {
+  const parent = document.createElement("div");
+  document.body.appendChild(parent);
+  const doc = "1. a\n   - a1\n2. b\n3. c";
+  const v = new EditorView({
+    parent,
+    state: EditorState.create({ doc, extensions: [history(), markdown(), codeFolding(), plugin.extensions] }),
+  });
+  runCommand("move-subtree-down", v);
+  assert.equal(text(v), "1. b\n2. a\n   - a1\n3. c");
+  assert.equal(cursorLine(v), 2);
+  runCommand("move-subtree-down", v);
+  assert.equal(text(v), "1. b\n2. c\n3. a\n   - a1");
+  runCommand("move-subtree-down", v);
+  runCommand("move-subtree-up", v);
+  assert.equal(text(v), "1. b\n2. a\n   - a1\n3. c");
+  undo(v);
+  undo(v);
+  assert.equal(text(v), "1. b\n2. a\n   - a1\n3. c");
+  undo(v);
+  assert.equal(text(v), doc);
+  v.destroy();
 });
 
 test("a command that throws logs the error instead", () => {

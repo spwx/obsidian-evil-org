@@ -1,10 +1,10 @@
 "use strict";
 
 const { Plugin, MarkdownView } = require("obsidian");
-const { Prec, EditorState, EditorSelection } = require("@codemirror/state");
+const { Prec, EditorState, EditorSelection, ChangeSet } = require("@codemirror/state");
 const { keymap, EditorView } = require("@codemirror/view");
 const { invertedEffects } = require("@codemirror/commands");
-const { foldable, foldedRanges, foldEffect, unfoldEffect } = require("@codemirror/language");
+const { foldable, foldedRanges, foldEffect, unfoldEffect, indentUnit } = require("@codemirror/language");
 
 // Markdown has six heading levels; a line of seven or more `#`s is body text.
 const MAX_LEVEL = 6;
@@ -520,16 +520,22 @@ function stockIndent(cm, args, ranges) {
 // indenting. expandToLine treats a closed fold as one line, so `>>` on a
 // folded heading shifts its whole subtree (org-demote-subtree) and on an open
 // one just the heading (org-do-demote). Body lines are left alone. A range
-// that doesn't start on a heading indents as usual.
+// that starts on a list item shifts items with their sub-items (see
+// indentItems); one that starts on another line indents as usual.
 function orgIndent(cm, args, ranges) {
   const view = cm.cm6;
   const state = view.state;
   const doc = state.doc;
   const { first, last } = operatorLines(ranges[0]);
   const levels = headingLevels(doc);
-  if (!levels[first]) return stockIndent(cm, args, ranges);
   const vim = cm.state.vim;
   const steps = vim && vim.visualMode ? args.repeat || 1 : 1;
+  if (!levels[first] && listItem(doc, first)) {
+    indentItems(view, first, last, args.indentRight, steps);
+    const line = view.state.doc.line(first);
+    return new ranges[0].anchor.constructor(first - 1, firstNonBlank(line.text));
+  }
+  if (!levels[first]) return stockIndent(cm, args, ranges);
   const folds = allFolds(state);
   const changes = [];
   const closed = [];
@@ -600,69 +606,92 @@ function subtreeTextObject(cm, head, motionArgs, vim) {
 
 // org-move-subtree-down/up (M-↓/M-↑): swap the subtree under the cursor with
 // the next or previous `count` sibling subtrees, keeping the blank lines
-// between them where they were and closed folds closed. On other lines move
-// the line (with the closed fold on it) past `count` lines, a closed fold
+// between them where they were and closed folds closed. In a list, swap the
+// item the cursor is in, with its sub-items, the same way with its sibling
+// items (org-move-item-down/up), and renumber a numbered list. On other lines
+// move the line (with the closed fold on it) past `count` lines, a closed fold
 // counting as one line.
 function moveSubtree(view, forward, count) {
   const state = view.state;
   const doc = state.doc;
   const folds = allFolds(state);
-  const n = doc.lineAt(state.selection.main.head).number;
-  const level = headingLevels(doc)[n];
-  const block = [n, blockEnd(doc, folds, level, n)];
-  const siblings = siblingBlocks(doc, folds, level, block, forward, count);
+  const kind = blockKind(doc, doc.lineAt(state.selection.main.head).number);
+  const n = kind.line;
+  const block = [n, blockEnd(doc, folds, kind, n)];
+  const siblings = siblingBlocks(doc, folds, kind, block, forward, count);
   if (siblings.length === 0) return false;
   const near = siblings[0];
   const far = siblings[siblings.length - 1];
+  // The list keeps the number of its first item.
+  const item = kind.item;
+  let renumber = null;
+  if (item && item.delim) {
+    const top = listSpan(doc, folds, item)[0];
+    const start = Number(listItem(doc, top).digits);
+    renumber = (next) => renumberFrom(next, [], listItem(next, top), top, start);
+  }
   if (forward) {
-    swapSpans(view, folds, block, [near[0], far[1]]);
+    swapSpans(view, folds, block, [near[0], far[1]], renumber);
   } else {
     // Blank lines just above the block stay where they are, even at the end
     // of a closed fold (so not near[1]).
     let end = n - 1;
     while (end > near[0] && isBlank(doc.line(end).text)) end--;
-    swapSpans(view, folds, [far[0], end], block);
+    swapSpans(view, folds, [far[0], end], block, renumber);
   }
   return true;
 }
 
-// Last line of the block moveSubtree moves that starts on line n: with a
-// heading's level, its subtree without trailing blank lines; with level 0, the
-// line and any closed fold on it.
-function blockEnd(doc, folds, level, n) {
-  return level ? sectionEnd(doc, n, false) : foldedLastLine(doc, folds, n);
+// What moveSubtree moves from line n, and the line it starts on: a heading's
+// subtree ({ level }), the list item n is in ({ item }), or else the line.
+function blockKind(doc, n) {
+  const level = headingLevels(doc)[n];
+  const item = !level && enclosingItem(doc, n);
+  return item ? { item, line: item.line } : { level, line: n };
 }
 
-// Up to count blocks of the given level beside block ([first, last] lines),
+// Last line of the block of the given kind that starts on line n: a heading's
+// subtree or an item with its sub-items, without trailing blank lines; or the
+// line and any closed fold on it.
+function blockEnd(doc, folds, kind, n) {
+  if (kind.level) return sectionEnd(doc, n, false);
+  if (kind.item) return itemEnd(doc, folds, listItem(doc, n));
+  return foldedLastLine(doc, folds, n);
+}
+
+// Up to count blocks of the given kind beside block ([first, last] lines),
 // after it going forward, else before it; nearest first, each [first, last].
-function siblingBlocks(doc, folds, level, block, forward, count) {
+function siblingBlocks(doc, folds, kind, block, forward, count) {
   const out = [];
   while (out.length < count) {
-    const s = siblingStart(doc, folds, level, block, forward);
+    const s = siblingStart(doc, folds, kind, block, forward);
     if (!s) break;
-    out.push((block = [s, blockEnd(doc, folds, level, s)]));
+    out.push((block = [s, blockEnd(doc, folds, kind, s)]));
   }
   return out;
 }
 
 // First line of the block right after or before block, or 0 if there is none.
 // A heading's sibling is the nearest heading of its level or shallower, found
-// past blank lines or deeper subtrees, and only if it has the same level. A
-// line's is the next line, or the previous one with any closed fold over it.
-function siblingStart(doc, folds, level, [first, last], forward) {
+// past blank lines or deeper subtrees, and only if it has the same level. An
+// item's is the next or previous item of its list (see siblingItem). A line's
+// is the next line, or the previous one with any closed fold over it.
+function siblingStart(doc, folds, kind, [first, last], forward) {
   const i = forward ? last + 1 : first - 1;
   if (i < 1 || i > doc.lines) return 0;
-  if (!level) return forward ? i : doc.lineAt(foldedLineStart(doc, folds, doc.line(i).from)).number;
+  if (kind.item) return siblingItem(doc, kind.item, i, forward);
+  if (!kind.level) return forward ? i : doc.lineAt(foldedLineStart(doc, folds, doc.line(i).from)).number;
   const levels = headingLevels(doc);
   let h = i;
-  while (h >= 1 && h <= doc.lines && !(levels[h] && levels[h] <= level)) h += forward ? 1 : -1;
-  return levels[h] === level ? h : 0;
+  while (h >= 1 && h <= doc.lines && !(levels[h] && levels[h] <= kind.level)) h += forward ? 1 : -1;
+  return levels[h] === kind.level ? h : 0;
 }
 
 // Swap the line spans upper and lower ([first, last], upper above lower) in
 // one change, leaving the text between them in place. The cursor moves with
-// its span, and the folds that start in either span are closed again.
-function swapSpans(view, folds, upper, lower) {
+// its span, and the folds that start in either span are closed again. fix,
+// if given, returns more changes to make to the swapped doc in the same step.
+function swapSpans(view, folds, upper, lower, fix = null) {
   const state = view.state;
   const doc = state.doc;
   const levels = headingLevels(doc);
@@ -681,20 +710,23 @@ function swapSpans(view, folds, upper, lower) {
   // such fold is dropped whole (and restored by undo) and can be re-closed.
   const inside = folds.filter((f) => f.from >= from && f.from <= to);
   const replaceTo = Math.max(to, ...inside.map((f) => f.to));
+  const swap = state.changes({ from, to: replaceTo, insert: lowerText + gap + upperText + doc.sliceString(to, replaceTo) });
+  const swapped = swap.apply(doc);
+  const after = ChangeSet.of(fix ? fix(swapped) : [], swapped.length);
+  // Where the text at pos ends up.
+  const moved = (pos) => after.mapPos(pos + shift(pos));
   // A heading's fold is recomputed where it lands; any other keeps its text,
   // cut at the end of its span.
   const headingFolds = [];
   const otherFolds = [];
   for (const f of inside) {
     const line = doc.lineAt(f.from);
-    const d = shift(f.from);
-    if (levels[line.number] && f.from === line.to) headingFolds.push(line.from + d);
-    else otherFolds.push({ from: f.from + d, to: Math.min(f.to, spanEnd(f.from)) + d });
+    if (levels[line.number] && f.from === line.to) headingFolds.push(moved(line.from));
+    else otherFolds.push({ from: moved(f.from), to: moved(Math.min(f.to, spanEnd(f.from))) });
   }
-  const cursor = state.selection.main.head;
   view.dispatch({
-    changes: { from, to: replaceTo, insert: lowerText + gap + upperText + doc.sliceString(to, replaceTo) },
-    selection: { anchor: cursor + shift(cursor) },
+    changes: swap.compose(after),
+    selection: { anchor: moved(state.selection.main.head) },
     scrollIntoView: true,
     userEvent: "move.line",
   });
@@ -761,10 +793,11 @@ function itemEnd(doc, folds, item) {
 }
 
 // Changes that add one to the number of each item of the ordered list `item`
-// is in, from the one starting on line n to the end of the list.
-function renumberFrom(doc, folds, item, n) {
+// is in, from the one starting on line n to the end of the list; or, with
+// start, that number those items start, start + 1, and so on.
+function renumberFrom(doc, folds, item, n, start) {
   const changes = [];
-  for (let i = n; i <= doc.lines; ) {
+  for (let i = n, k = 0; i <= doc.lines; ) {
     if (isBlank(doc.line(i).text)) {
       i++;
       continue;
@@ -772,7 +805,8 @@ function renumberFrom(doc, folds, item, n) {
     const next = listItem(doc, i);
     if (!next || next.indent !== item.indent || next.delim !== item.delim) break;
     const from = doc.line(i).from + next.indent.length;
-    changes.push({ from, to: from + next.digits.length, insert: String(Number(next.digits) + 1) });
+    const number = String(start === undefined ? Number(next.digits) + 1 : start + k++);
+    if (number !== next.digits) changes.push({ from, to: from + next.digits.length, insert: number });
     i = itemEnd(doc, folds, next) + 1;
   }
   return changes;
@@ -808,27 +842,145 @@ function emptyRow(text) {
 const QUOTE_RE = /^[ \t]*>/;
 const CALLOUT_RE = /^[ \t]*>[ \t]*\[![^\]]*\]/;
 
-// First and last lines of the list `item` is in: its sibling items, with the
-// same indent and the same bullet or number delimiter, and their sub-items.
-function listSpan(doc, folds, item) {
-  const sibling = (i) => {
-    const other = listItem(doc, i);
-    return other && other.indent === item.indent && other.bullet === item.bullet && other.delim === item.delim;
-  };
-  let first = item.line;
-  for (let i = item.line - 1; i >= 1; i--) {
+// Items of one list: the same indent and the same bullet or number delimiter.
+const sameList = (a, b) => a.indent === b.indent && a.bullet === b.bullet && a.delim === b.delim;
+
+// The line of the first item of `item`'s list from line i on, going forward,
+// or back, past blank lines and lines indented deeper; 0 if another line
+// comes first.
+function siblingItem(doc, item, i, forward) {
+  for (; i >= 1 && i <= doc.lines; i += forward ? 1 : -1) {
     const text = doc.line(i).text;
     if (isBlank(text) || firstNonBlank(text) > item.indent.length) continue;
-    if (!sibling(i)) break;
-    first = i;
+    const other = listItem(doc, i);
+    return other && sameList(other, item) ? i : 0;
   }
+  return 0;
+}
+
+// First and last lines of the list `item` is in: its sibling items and their
+// sub-items.
+function listSpan(doc, folds, item) {
+  let first = item.line;
+  for (let s; (s = siblingItem(doc, item, first - 1, false)); ) first = s;
   let last = itemEnd(doc, folds, item);
-  for (let i = last + 1; i <= doc.lines; i++) {
-    if (isBlank(doc.line(i).text)) continue;
-    if (!sibling(i)) break;
-    last = i = itemEnd(doc, folds, listItem(doc, i));
-  }
+  for (let s; (s = siblingItem(doc, item, last + 1, true)); ) last = itemEnd(doc, folds, listItem(doc, s));
   return [first, last];
+}
+
+// Whether the note's lists are indented with tabs, going by its first
+// indented item; null if no item is indented.
+function tabbedLists(doc) {
+  for (let i = 1; i <= doc.lines; i++) {
+    const item = listItem(doc, i);
+    if (item && item.indent) return item.indent.includes("\t");
+  }
+  return null;
+}
+
+// The indent `>` gives an item (org-indent-item-tree): that of the sub-items
+// of the sibling above it, which it joins; if that sibling has none, a tab
+// more than the sibling in a note whose lists use tabs, else spaces up to the
+// sibling's text, as Markdown needs for a sub-item. The first item of a list
+// has no sibling to go under, so it gets the editor's indent unit, as in vim.
+function childIndent(state, doc, folds, item) {
+  const tabs = tabbedLists(doc) ?? state.facet(indentUnit) === "\t";
+  const s = siblingItem(doc, item, item.line - 1, false);
+  if (!s) return item.indent + (tabs ? "\t" : state.facet(indentUnit));
+  const prev = listItem(doc, s);
+  const end = itemEnd(doc, folds, prev);
+  for (let i = s + 1; i <= end; i++) {
+    const child = listItem(doc, i);
+    if (child) return child.indent;
+  }
+  if (tabs) return prev.indent + "\t";
+  const marker = prev.bullet || prev.digits + prev.delim;
+  const gap = firstNonBlank(doc.line(s).text.slice(prev.indent.length + marker.length));
+  return prev.indent + " ".repeat(marker.length + (gap >= 1 && gap <= 4 ? gap : 1));
+}
+
+// The change that replaces the first `width` characters of whitespace on
+// line with indent, touching only the characters that differ.
+function reindent(line, width, indent) {
+  const end = Math.min(width, firstNonBlank(line.text));
+  let i = 0;
+  while (i < end && i < indent.length && line.text[i] === indent[i]) i++;
+  return { from: line.from + i, to: line.from + end, insert: indent.slice(i) };
+}
+
+// One `>` or `<` over the items that start in lines first..last, as changes
+// to doc (see indentItems).
+function shiftItems(state, doc, folds, first, last, right) {
+  const changes = [];
+  const lists = []; // lines of items whose numbered lists may change
+  // Items at the same indent go to the same indent, so `3>>` over siblings
+  // doesn't nest each under the one before it.
+  const targets = new Map();
+  for (let i = first; i <= last; i++) {
+    const item = listItem(doc, i);
+    if (!item) continue;
+    if (!targets.has(item.indent)) {
+      const parent = right ? null : parentItem(doc, item);
+      targets.set(item.indent, right ? childIndent(state, doc, folds, item) : parent && parent.indent);
+    }
+    const indent = targets.get(item.indent);
+    if (indent === null) continue;
+    const end = itemEnd(doc, folds, item);
+    for (let j = i; j <= end; j++) {
+      const line = doc.line(j);
+      if (!isBlank(line.text)) changes.push(reindent(line, item.indent.length, indent));
+    }
+    lists.push(i, siblingItem(doc, item, end + 1, true));
+    i = end; // its sub-items go with it
+  }
+  const shift = ChangeSet.of(changes, doc.length);
+  const next = shift.apply(doc);
+  // Renumber each numbered list an item joined or left. A list keeps the
+  // number of its first item if that item was already first; a list that
+  // starts at a moved item or at a new first item starts at 1.
+  const renumber = [];
+  const done = new Set();
+  for (const n of lists) {
+    const item = n && listItem(next, n);
+    if (!item || !item.delim) continue;
+    const top = listSpan(next, [], item)[0];
+    if (done.has(top)) continue;
+    done.add(top);
+    const before = listItem(doc, top);
+    const kept = before && listSpan(doc, folds, before)[0] === top;
+    renumber.push(...renumberFrom(next, [], listItem(next, top), top, kept ? Number(listItem(next, top).digits) : 1));
+  }
+  return shift.compose(ChangeSet.of(renumber, next.length));
+}
+
+// `>`/`<` on list items (org-shiftmetaright/left): indent or outdent each item
+// that starts in lines first..last with its body and sub-items, `steps` times.
+// `>` puts an item under the sibling above it (see childIndent); `<` makes it
+// a sibling of its parent, and an item without a parent stays. Lines that
+// aren't in such an item stay, as body lines do for headings. Numbered lists
+// are renumbered, closed folds stay closed, and one `u` undoes it all.
+function indentItems(view, first, last, right, steps) {
+  const state = view.state;
+  const folds = allFolds(state);
+  let changes = ChangeSet.empty(state.doc.length);
+  for (let k = 0; k < steps; k++) {
+    const mapped = folds.map((f) => ({ from: changes.mapPos(f.from), to: changes.mapPos(f.to) }));
+    changes = changes.compose(shiftItems(state, changes.apply(state.doc), mapped, first, last, right));
+  }
+  if (changes.empty) return;
+  view.dispatch({ changes, userEvent: "input.indent" });
+  // Vim opens folds under the operator's range once it finishes; close the
+  // ones in the shifted items again.
+  const doc = state.doc;
+  let end = last;
+  for (let i = first; i <= last; i++) {
+    const item = listItem(doc, i);
+    if (item) end = Math.max(end, itemEnd(doc, folds, item));
+  }
+  const refold = folds
+    .filter((f) => f.from >= doc.line(first).from && f.from <= doc.line(end).to)
+    .map((f) => ({ from: changes.mapPos(f.from), to: changes.mapPos(f.to) }));
+  if (refold.length > 0) afterVim(view, () => foldRanges(view, refold));
 }
 
 // The Markdown elements that contain line n, innermost first, for `ae`/`ie`:

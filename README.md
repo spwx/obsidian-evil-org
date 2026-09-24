@@ -1,70 +1,109 @@
 # Evil Org
 
-Org-mode headline editing for Obsidian's Vim mode, in the spirit of Emacs [evil-org-mode](https://github.com/Somelauw/evil-org-mode).
+Evil Org adds org-mode headline editing to the Vim mode of Obsidian. It uses the same concepts as Emacs [evil-org-mode](https://github.com/Somelauw/evil-org-mode).
 
-Markdown headings act like org headlines. Tab cycles folding the way it does in org, and a folded heading behaves like a single line, so Vim commands move, copy and promote/demote whole subtrees.
+The plugin uses Markdown headings as org headlines. The `Tab` key changes the fold state of a heading, as in org-mode. When a heading is folded, the plugin counts it as one line. Vim commands then move, copy, promote, and demote the full subtree.
 
 ## Requirements
 
-This is mostly a set of Vim keys, so turn on **Settings → Editor → Vim key bindings**. Every key in the table below works only in Vim normal or visual mode, and leaves insert mode and ordinary editing untouched. The four [commands](#commands) are the exception: they run in any mode, with or without Vim.
+The plugin is primarily a set of Vim keys. You must set **Settings → Editor → Vim key bindings** to on.
+
+The keys in the table that follows operate only in Vim normal mode and Vim visual mode. They do not change insert mode or usual editing. The four [commands](#commands) are different. They operate in all modes, with or without Vim.
 
 ## Keys
 
-| Key | Does |
+| Key | Function |
 | --- | --- |
-| `Tab` | Cycle the heading under the cursor: folded → children → subtree (`TAB` in org-mode). On a folded non-heading block it toggles that fold. |
-| `Shift-Tab` | Cycle the whole note: overview → contents → show all (`S-TAB` in org-mode). |
-| `V` | Selecting a folded heading selects its whole subtree. |
-| `dd`, `yy`, `cc`, `3dd`, … | A folded heading counts as one line, so these act on the whole subtree. |
-| `u` | Undoing a delete brings back folded headings still folded. |
-| `p` / `P` | Put a yanked subtree after or before a folded heading, not inside it. Pasted subtrees arrive folded (org-mode's `org-yank-folded-subtrees`). |
-| `>>` / `<<` | On a heading, demote/promote by adding/removing a `#` instead of indenting. Folded, the whole subtree shifts (`M-S-→` in org-mode). Open, only the heading shifts (`M-→` in org-mode). Levels stay between 1 and 6. Body lines are left alone. |
-| `3>>`, `V>`, `.` | Every heading in the range shifts. Repeatable and undoable in one step. |
-| `Alt-j` / `Alt-k` | On a heading, swap its subtree with the next or previous sibling (`M-↓`/`M-↑` in org-mode). It won't cross the parent's boundary. Blank lines between subtrees stay put, and folded subtrees stay folded. A count moves past that many siblings; `.` repeats and `u` undoes in one step. On other lines, move the line, stepping over a folded heading as one line. On macOS, Alt is Option. |
-| `ar` / `ir` | Subtree text objects (evil-org `ar`/`ir`), folded or not. `ar` is the subtree the cursor is in plus trailing blank lines; `ir` is its body, without the heading or surrounding blank lines. Use them with any operator (`dar`, `yar`, `cir`, `>ar`) or in visual mode. A count (`d2ar`), or `ar` again in visual mode, takes in the parent subtree. |
+| `Tab` | Changes the fold state of the heading at the cursor in this sequence: folded → children → subtree (`TAB` in org-mode). On a folded block that is not a heading, it opens or closes that fold. |
+| `Shift-Tab` | Changes the fold state of all of the note in this sequence: overview → contents → show all (`S-TAB` in org-mode). |
+| `V` | When you select a folded heading, the selection includes all of its subtree. |
+| `dd`, `yy`, `cc`, `3dd`, … | The plugin counts a folded heading as one line. Thus, these commands operate on all of the subtree. |
+| `u` | When you undo a delete, the plugin restores the folded headings in their folded state. |
+| `p` / `P` | Puts a yanked subtree after or before a folded heading, not in it. Pasted subtrees stay folded (`org-yank-folded-subtrees` in org-mode). |
+| `>>` / `<<` | On a heading, these keys demote or promote the heading. They add or remove one `#`. They do not indent the line. If the heading is folded, all of the subtree changes level (`M-S-→` in org-mode). If the heading is open, only the heading changes level (`M-→` in org-mode). The level stays between 1 and 6. The plugin does not change body lines. |
+| `3>>`, `V>`, `.` | All headings in the range change level. You can repeat the change with `.`. One `u` undoes all of the change. |
+| `Alt-j` / `Alt-k` | On a heading, these keys exchange its subtree with the next or previous sibling (`M-↓`/`M-↑` in org-mode). The subtree does not move out of its parent. Blank lines between subtrees do not move. Folded subtrees stay folded. With a count, the subtree moves past that number of siblings. `.` repeats the move, and one `u` undoes it. On other lines, these keys move the line. They move over a folded heading as one line. On macOS, the Alt key is the Option key. |
+| `ar` / `ir` | Text objects for a subtree (evil-org `ar`/`ir`). They operate on folded and open subtrees. `ar` is the subtree that contains the cursor, plus the blank lines after it. `ir` is the body of that subtree. It does not include the heading or the blank lines around it. You can use them with all operators (`dar`, `yar`, `cir`, `>ar`) and in visual mode. With a count (`d2ar`), or when you type `ar` again in visual mode, the selection includes the parent subtree. |
 
-On lines that aren't headings, `>` and `<` indent as usual. Lines starting with `#` inside fenced code blocks or front matter never count as headings.
+On lines that are not headings, `>` and `<` indent the line as in standard Vim. In fenced code blocks and front matter, a line that starts with `#` is not a heading.
 
 ## Commands
 
-Four of the actions above are also Obsidian commands, bindable under **Settings → Hotkeys**:
+Four of the actions in the table are also Obsidian commands. You can set hotkeys for them in **Settings → Hotkeys**:
 
-- **Cycle fold under cursor (TAB in org-mode)** — what `Tab` does
-- **Cycle global fold overview (S-TAB in org-mode)** — what `Shift-Tab` does
-- **Move subtree down (M-↓ in org-mode)** — what `Alt-j` does
-- **Move subtree up (M-↑ in org-mode)** — what `Alt-k` does
+- **Cycle fold under cursor (TAB in org-mode)**: same function as `Tab`
+- **Cycle global fold overview (S-TAB in org-mode)**: same function as `Shift-Tab`
+- **Move subtree down (M-↓ in org-mode)**: same function as `Alt-j`
+- **Move subtree up (M-↑ in org-mode)**: same function as `Alt-k`
 
-None has a default hotkey — bind them yourself. Unlike the keys above, they also work in insert mode and with Vim mode turned off.
+These commands do not have default hotkeys. You must set the hotkeys yourself. Different from the keys in the table, these commands also operate in insert mode and when Vim mode is off.
 
 ## Installation
 
-From Obsidian: **Settings → Community plugins → Browse**, search for "Evil Org".
+To install the plugin from Obsidian:
 
-Manually: download `main.js` and `manifest.json` from the [latest release](https://github.com/spwx/obsidian-evil-org/releases/latest) into `<vault>/.obsidian/plugins/evil-org/`, then enable the plugin under **Settings → Community plugins**.
+1. Open **Settings → Community plugins → Browse**.
+2. Type "Evil Org" in the search field.
+3. Select the plugin.
+4. Select **Install**, then select **Enable**.
 
-## How it works, and a caveat
+To install the plugin manually:
 
-Obsidian has no public API for its Vim mode, so the plugin changes the Vim engine that Obsidian exposes at `window.CodeMirrorAdapter.Vim`. It redefines the `expandToLine` motion so it is fold-aware, and it maps `p`, `P`, `d`, `>`, `<`, `<A-j>`, `<A-k>`, `ar` and `ir` (plus `x`, `X` and `D` in visual mode). Obsidian's Vim can lose the Alt modifier on macOS, where Option-j arrives as `∆`, so the plugin catches Alt-j/Alt-k by key code in Vim normal mode before the editor sees them. It also reads the CodeMirror 6 view through `editor.cm`. None of this is documented, so an Obsidian update could break the plugin. Unloading the plugin restores stock Vim behaviour.
+1. Download `main.js` and `manifest.json` from the [latest release](https://github.com/spwx/obsidian-evil-org/releases/latest).
+2. Put the two files in `<vault>/.obsidian/plugins/evil-org/`.
+3. Open **Settings → Community plugins** and set **Evil Org** to on.
+
+## How the plugin operates
+
+Obsidian does not have a public API for its Vim mode. For this reason, the plugin changes the Vim engine that Obsidian makes available at `window.CodeMirrorAdapter.Vim`. The plugin makes these changes:
+
+- It changes the `expandToLine` motion so that the motion includes folded lines.
+- It maps `p`, `P`, `d`, `>`, `<`, `<A-j>`, `<A-k>`, `ar`, and `ir`. In visual mode, it also maps `x`, `X`, and `D`.
+- It gets `Alt-j` and `Alt-k` by their key codes in Vim normal mode, before the editor gets them. On macOS, the Vim mode of Obsidian can lose the Alt modifier. For example, `Option-j` gives `∆`.
+- It gets the CodeMirror 6 view from `editor.cm`.
+
+**Caution:** Obsidian does not document these interfaces. An Obsidian update can cause the plugin to stop operating. When you unload the plugin, Vim goes back to its standard behavior.
 
 ## Development
 
-`main.js` is the source; `npm run build` only syntax-checks it, so the released file is byte-for-byte the one in the repo. The end-to-end tests run it against a real CodeMirror 6 editor with [codemirror-vim](https://github.com/replit/codemirror-vim) in jsdom:
+The source file is `main.js`. The command `npm run build` only does a syntax check of this file. The build does not change the file. Thus, the released file is identical to the file in the repository, byte for byte.
+
+The end-to-end tests run `main.js` in jsdom, with a real CodeMirror 6 editor and [codemirror-vim](https://github.com/replit/codemirror-vim). To run the tests, use these commands:
 
 ```sh
 npm install
 npm test
 ```
 
-To release, run the release script with the new version (no `v`):
+To make a release, run the release script with the new version number. Do not put a `v` before the number.
 
 ```sh
-npm run release -- 1.1.3          # bump, test, commit, tag
-npm run release -- 1.1.3 --push   # ...and push main and the tag
+npm run release -- 1.1.3          # change the version, test, commit, and tag
+npm run release -- 1.1.3 --push   # do the same steps, then push main and the tag
 ```
 
-It bumps `version` in `manifest.json`, adds the same version to `versions.json` (mapped to the manifest's `minAppVersion`, which tells older Obsidian installs which build still runs for them), runs the build and tests, then commits and tags. The commit message opens in `$EDITOR` prefilled with `Bump to <version>` so the body can describe what changed; `--no-edit` keeps just that line. It refuses to run on a dirty tree, off `main`, when `main` and `origin/main` have diverged, or when the version is not newer than the current one.
+The script does these steps:
 
-Pushing the tag starts the Release workflow, which runs the tests, checks the tag against both files, attests `main.js` and `manifest.json`, and publishes the GitHub release.
+1. It changes `version` in `manifest.json` to the new version.
+2. It adds the new version to `versions.json`, with the `minAppVersion` value from `manifest.json`. This value tells older Obsidian installations which build they can use.
+3. It runs the build and the tests.
+4. It makes a commit and a tag.
+
+The commit message opens in `$EDITOR`. The first line is `Bump to <version>`. Add a body that describes the changes. To keep only the first line, add `--no-edit`.
+
+The script stops if one of these conditions is true:
+
+- The working tree has changes that are not committed.
+- The current branch is not `main`.
+- `main` and `origin/main` have diverged.
+- The new version is not more recent than the current version.
+
+When you push the tag, the Release workflow starts. The workflow does these steps:
+
+1. It runs the tests.
+2. It compares the tag with the version in `manifest.json` and in `versions.json`.
+3. It makes attestations for `main.js` and `manifest.json`.
+4. It publishes the GitHub release.
 
 ## License
 

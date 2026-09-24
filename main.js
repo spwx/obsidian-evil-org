@@ -782,15 +782,52 @@ function emptyRow(text) {
   return indent + text.slice(indent.length).replace(/\\\||[^|]/g, (m) => " ".repeat(m.length));
 }
 
+// Number of blank lines right above line n.
+function blanksAbove(doc, n) {
+  let k = 0;
+  while (n - k > 1 && isBlank(doc.line(n - k - 1).text)) k++;
+  return k;
+}
+
+// Where a heading opened after the subtree of the heading on line h goes (h 0:
+// after the text before the first heading), as the line it goes below and the
+// blank lines above and below it. It keeps the note's spacing: if blank lines
+// separate the subtree from the next heading, as many separate the new heading
+// from both. At the end of the note it goes after the subtree and any closed
+// fold, with as many blank lines above it as heading h has, and blank lines
+// at the very end stay at the end.
+function headingSlot(doc, folds, h) {
+  const levels = headingLevels(doc);
+  const first = levels.findIndex((l) => l > 0);
+  const end = h ? sectionEnd(doc, h, true) : first > 0 ? first - 1 : doc.lines;
+  let last = end;
+  while (last > h && isBlank(doc.line(last).text)) last--;
+  if (end < doc.lines) return { target: end, above: 0, below: end - last };
+  return { target: last ? foldedLastLine(doc, folds, last) : 0, above: h ? blanksAbove(doc, h) : 0, below: 0 };
+}
+
+// The change that opens a line holding text below line target (after) or
+// above it, with `above` and `below` blank lines around it, and the new line's
+// number. It inserts at the start of the line after the new one where
+// possible: the end of the line before it may be the end of a closed fold.
+function openLineChange(doc, target, after, text, above = 0, below = 0) {
+  const newLine = (after ? target + 1 : target) + above;
+  const insert = after && target === doc.lines
+    ? { from: doc.length, insert: "\n".repeat(1 + above) + text + "\n".repeat(below) }
+    : { from: doc.line(after ? target + 1 : target).from, insert: "\n".repeat(above) + text + "\n".repeat(1 + below) };
+  return { insert, newLine };
+}
+
 // `o`/`O` (evil-org-open-below/above). In a table, open an empty row below or
 // above the row, with the cursor in its first cell; `o` on the header opens
 // the first row under the delimiter row, and `O` there opens a plain line above
 // the table. In a list item, open a new item after the item and its
 // sub-items, or before the item: same indent and bullet, the next number
 // (renumbering the items after it), and an empty checkbox if the item has one.
-// On a closed fold `o` opens a line below the whole fold, not inside it.
-// Elsewhere `o`/`O` are the stock ones. Vim calls actions as methods of its
-// action table, so `this` holds the stock actions.
+// On a heading, open a plain line, as in vim. On a closed fold `o` opens a
+// line below the whole fold, not inside it. Elsewhere `o`/`O` are the stock
+// ones. Vim calls actions as methods of its action table, so `this` holds the
+// stock actions.
 function openLine(cm, args, vim) {
   const view = cm.cm6;
   if (!view) return this.newLineAndEnterInsertMode(cm, args, vim);
@@ -822,17 +859,31 @@ function openLine(cm, args, vim) {
     text = indent;
   }
   if (col === undefined) col = text.length;
-  // Insert at the start of the line after the new one where possible: the end
-  // of the line before it may be the end of a closed fold.
-  const insert = args.after && target === doc.lines
-    ? { from: doc.length, insert: "\n" + text }
-    : { from: doc.line(args.after ? target + 1 : target).from, insert: text + "\n" };
+  const { insert, newLine } = openLineChange(doc, target, args.after, text);
   const changes = state.changes([insert, ...renumber]);
-  const newLine = args.after ? target + 1 : target;
   const cursor = changes.apply(doc).line(newLine).from + col;
   view.dispatch({ changes, selection: { anchor: cursor }, scrollIntoView: true, userEvent: "input" });
   const head = new cm.constructor.Pos(newLine - 1, col);
   this.enterInsertMode(cm, { repeat: args.repeat, head }, vim);
+}
+
+// org-insert-heading-respect-content (M-RET) and, with deeper, a subheading:
+// open a heading after the subtree the cursor is in, at the same level or one
+// deeper. Outside any heading, open a level-1 heading after the text before
+// the first heading. In vim normal mode, go on to insert mode, as evil-org
+// does.
+function insertHeading(view, deeper) {
+  const state = view.state;
+  const doc = state.doc;
+  const h = enclosingHeadings(doc, doc.lineAt(state.selection.main.head).number)[0] || 0;
+  const level = h ? Math.min(MAX_LEVEL, headingLevels(doc)[h] + (deeper ? 1 : 0)) : 1;
+  const { target, above, below } = headingSlot(doc, allFolds(state), h);
+  const { insert, newLine } = openLineChange(doc, target, true, "#".repeat(level) + " ", above, below);
+  const changes = state.changes(insert);
+  const cursor = changes.apply(doc).line(newLine).to;
+  view.dispatch({ changes, selection: { anchor: cursor }, scrollIntoView: true, userEvent: "input" });
+  const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
+  if (Vim && normalMode(view)) Vim.handleKey(view.cm, "A", "user");
 }
 
 // Command ids and names are user-facing: hotkeys are bound to the ids.
@@ -841,6 +892,8 @@ const COMMANDS = [
   ["cycle-global", "Cycle global fold overview (S-TAB in org-mode)", globalCycle],
   ["move-subtree-down", "Move subtree down (M-↓ in org-mode)", (view) => moveSubtree(view, true, 1)],
   ["move-subtree-up", "Move subtree up (M-↑ in org-mode)", (view) => moveSubtree(view, false, 1)],
+  ["insert-heading", "Insert heading (M-RET in org-mode)", (view) => insertHeading(view, false)],
+  ["insert-subheading", "Insert subheading", (view) => insertHeading(view, true)],
 ];
 
 module.exports = class EvilOrgPlugin extends Plugin {

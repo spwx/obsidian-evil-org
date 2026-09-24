@@ -8,7 +8,7 @@ The plugin uses Markdown headings as org headlines. The `Tab` key changes the fo
 
 The plugin is primarily a set of Vim keys. You must set **Settings → Editor → Vim key bindings** to on.
 
-The keys in the table that follows operate only in Vim normal mode and Vim visual mode. They do not change insert mode or usual editing. The four [commands](#commands) are different. They operate in all modes, with or without Vim.
+The keys in the table that follows operate only in Vim normal mode and Vim visual mode. They do not change insert mode or usual editing. The six [commands](#commands) are different. They operate in all modes, with or without Vim.
 
 ## Keys
 
@@ -23,21 +23,23 @@ The keys in the table that follows operate only in Vim normal mode and Vim visua
 | `>>` / `<<` | On a heading, these keys demote or promote the heading. They add or remove one `#`. They do not indent the line. If the heading is folded, all of the subtree changes level (`M-S-→` in org-mode). If the heading is open, only the heading changes level (`M-→` in org-mode). The level stays between 1 and 6. The plugin does not change body lines. |
 | `3>>`, `V>`, `.` | All headings in the range change level. You can repeat the change with `.`. One `u` undoes all of the change. |
 | `Alt-j` / `Alt-k` | On a heading, these keys exchange its subtree with the next or previous sibling (`M-↓`/`M-↑` in org-mode). The subtree does not move out of its parent. Blank lines between subtrees do not move. Folded subtrees stay folded. With a count, the subtree moves past that number of siblings. `.` repeats the move, and one `u` undoes it. On other lines, these keys move the line. They move over a folded heading as one line. On macOS, the Alt key is the Option key. |
-| `o` / `O` | In a list, these keys open a new item below or above the item at the cursor (`evil-org-open-below`/`-above`). The new item has the same indent and bullet. In a numbered list, it gets the next number, and the plugin renumbers the items after it. If the item has a checkbox, the new item gets an empty checkbox. `o` opens the new item after the sub-items of the item, as in org-mode. In a table, `o` and `O` open an empty row below or above the row at the cursor, with the same cells. Each cell keeps its width, so an aligned table stays aligned. The cursor goes in the first cell. On the header row, `o` opens the first row below the delimiter row, and `O` opens a usual line above the table. On a folded heading or item, `o` opens the line below the fold, not in it. A count (`3o`) and `.` open more items or rows. |
+| `o` / `O` | In a list, these keys open a new item below or above the item at the cursor (`evil-org-open-below`/`-above`). The new item has the same indent and bullet. In a numbered list, it gets the next number, and the plugin renumbers the items after it. If the item has a checkbox, the new item gets an empty checkbox. `o` opens the new item after the sub-items of the item, as in org-mode. In a table, `o` and `O` open an empty row below or above the row at the cursor, with the same cells. Each cell keeps its width, so an aligned table stays aligned. The cursor goes in the first cell. On the header row, `o` opens the first row below the delimiter row, and `O` opens a usual line above the table. On a heading, `o` and `O` open a usual line. To open a new heading, use the **Insert heading** command. On a folded heading, item, or block, `o` opens the line below the fold, not in it. A count (`3o`) and `.` open more items or rows. |
 | `ar` / `ir` | Text objects for a subtree (evil-org `ar`/`ir`). They operate on folded and open subtrees. `ar` is the subtree that contains the cursor, plus the blank lines after it. `ir` is the body of that subtree. It does not include the heading or the blank lines around it. You can use them with all operators (`dar`, `yar`, `cir`, `>ar`) and in visual mode. With a count (`d2ar`), or when you type `ar` again in visual mode, the selection includes the parent subtree. |
 
 On lines that are not headings, `>` and `<` indent the line as in standard Vim. In fenced code blocks and front matter, a line that starts with `#` is not a heading.
 
 ## Commands
 
-Four of the actions in the table are also Obsidian commands. You can set hotkeys for them in **Settings → Hotkeys**:
+Six actions are also Obsidian commands. You can set hotkeys for them in **Settings → Hotkeys**:
 
 - **Cycle fold under cursor (TAB in org-mode)**: same function as `Tab`
 - **Cycle global fold overview (S-TAB in org-mode)**: same function as `Shift-Tab`
 - **Move subtree down (M-↓ in org-mode)**: same function as `Alt-j`
 - **Move subtree up (M-↑ in org-mode)**: same function as `Alt-k`
+- **Insert heading (M-RET in org-mode)**: opens a new heading after the subtree that contains the cursor. The new heading has the same level as the heading of that subtree. If the cursor is not under a heading, the new heading has level 1.
+- **Insert subheading**: opens a new heading at the end of the subtree that contains the cursor. The new heading has one more `#` than the heading of that subtree, to a maximum of 6.
 
-These commands do not have default hotkeys. You must set the hotkeys yourself. Different from the keys in the table, these commands also operate in insert mode and when Vim mode is off.
+These commands do not have default hotkeys. You must set the hotkeys yourself. Different from the keys in the table, these commands also operate in insert mode and when Vim mode is off. In Vim normal mode, the insert commands go to insert mode.
 
 ## Installation
 

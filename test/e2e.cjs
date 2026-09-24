@@ -24,7 +24,7 @@ const { EditorState } = require("@codemirror/state");
 const { EditorView, runScopeHandlers } = require("@codemirror/view");
 const { foldable, foldedRanges, foldEffect, codeFolding } = require("@codemirror/language");
 const { markdown } = require("@codemirror/lang-markdown");
-const { history } = require("@codemirror/commands");
+const { history, undo } = require("@codemirror/commands");
 const { vim, Vim, getCM } = require("@replit/codemirror-vim");
 
 let activeView = null;
@@ -855,6 +855,42 @@ test("u undoes the new item and the renumbering in one step", async () => {
   assert.equal(text(v), "1. a\n2. b\n3. c");
 });
 
+test("o on a folded code block opens below the fold", async () => {
+  const v = open("# A\n```\ncode\n```\nx");
+  fold(v, 2);
+  gotoLine(v, 2);
+  await keys(v, "o");
+  assert.equal(text(v), "# A\n```\ncode\n```\n\nx");
+  assert.equal(cursorLine(v), 5);
+  assert.deepEqual(foldedLines(v), [2]);
+});
+
+test("O below a folded heading opens above the line, not in the fold", async () => {
+  const v = open(DOC);
+  fold(v, 3);
+  gotoLine(v, 8);
+  await keys(v, "O");
+  assert.equal(text(v), "# A\na\n## B\nb\n### C\nc\n## D\n\nd");
+  assert.equal(cursorLine(v), 8);
+  assert.deepEqual(foldedLines(v), [3]);
+});
+
+// --- o / O on headings ------------------------------------------------------------
+
+test("o and O on a heading open a plain line", async () => {
+  let v = open(DOC);
+  gotoLine(v, 3);
+  await keys(v, "o");
+  assert.equal(text(v), "# A\na\n## B\n\nb\n### C\nc\n## D\nd");
+  assert.equal(cursorLine(v), 4);
+  assert.ok(insertMode(v));
+  v = open(DOC);
+  gotoLine(v, 3);
+  await keys(v, "O");
+  assert.equal(text(v), "# A\na\n\n## B\nb\n### C\nc\n## D\nd");
+  assert.equal(cursorLine(v), 3);
+});
+
 test("o on a folded heading opens below the fold", async () => {
   const v = open(DOC);
   fold(v, 3);
@@ -865,13 +901,22 @@ test("o on a folded heading opens below the fold", async () => {
   assert.deepEqual(foldedLines(v), [3]);
 });
 
-test("O below a folded heading opens above the line, not in the fold", async () => {
+test("O on a heading below a folded heading opens above it, not in the fold", async () => {
   const v = open(DOC);
   fold(v, 3);
   gotoLine(v, 7);
   await keys(v, "O");
   assert.equal(text(v), "# A\na\n## B\nb\n### C\nc\n\n## D\nd");
   assert.equal(cursorLine(v), 7);
+  assert.deepEqual(foldedLines(v), [3]);
+});
+
+test("u undoes o on a folded heading, fold and all", async () => {
+  const v = open(DOC);
+  fold(v, 3);
+  gotoLine(v, 3);
+  await keys(v, "o<Esc>u");
+  assert.equal(text(v), DOC);
   assert.deepEqual(foldedLines(v), [3]);
 });
 
@@ -938,7 +983,7 @@ test("a | line without a delimiter row isn't a table", async () => {
 
 test("o and O outside lists open plain lines", async () => {
   const v = open("# A\ntext\n---\n- - -\n```\n- code\n```");
-  for (const n of [1, 2, 4]) {
+  for (const n of [2, 4]) {
     gotoLine(v, n);
     await keys(v, "o");
     assert.equal(v.state.doc.line(n + 1).text, "", `line ${n}`);
@@ -953,8 +998,86 @@ test("o and O outside lists open plain lines", async () => {
 
 const runCommand = (id, view) => plugin.commands.find((c) => c.id === id).editorCallback({ cm: view });
 
-test("the four commands keep their ids", () => {
-  assert.deepEqual(plugin.commands.map((c) => c.id), ["cycle-local", "cycle-global", "move-subtree-down", "move-subtree-up"]);
+test("the commands keep their ids", () => {
+  assert.deepEqual(plugin.commands.map((c) => c.id), [
+    "cycle-local", "cycle-global", "move-subtree-down", "move-subtree-up", "insert-heading", "insert-subheading",
+  ]);
+});
+
+test("insert heading opens a sibling after the subtree the cursor is in", async () => {
+  const v = open("# A\n\n## B\nb\n### C\nc\n\n## D");
+  gotoLine(v, 4);
+  await keys(v, "i");
+  runCommand("insert-heading", v);
+  assert.equal(text(v), "# A\n\n## B\nb\n### C\nc\n\n## \n\n## D");
+  assert.equal(v.state.selection.main.head, v.state.doc.line(8).to);
+  assert.ok(insertMode(v));
+});
+
+test("insert heading in normal mode goes on to insert mode", async () => {
+  const v = open(DOC);
+  fold(v, 3);
+  gotoLine(v, 3);
+  runCommand("insert-heading", v);
+  assert.equal(text(v), "# A\na\n## B\nb\n### C\nc\n## \n## D\nd");
+  assert.ok(insertMode(v));
+  assert.equal(v.state.selection.main.head, v.state.doc.line(7).to);
+  assert.deepEqual(foldedLines(v), [3]);
+});
+
+test("insert subheading opens a heading one deeper at the end of the subtree", async () => {
+  let v = open(DOC);
+  fold(v, 3);
+  gotoLine(v, 3);
+  await keys(v, "i");
+  runCommand("insert-subheading", v);
+  assert.equal(text(v), "# A\na\n## B\nb\n### C\nc\n### \n## D\nd");
+  assert.deepEqual(foldedLines(v), [3]);
+  v = open("###### F\nf");
+  gotoLine(v, 2);
+  runCommand("insert-subheading", v);
+  assert.equal(text(v), "###### F\nf\n###### ");
+});
+
+test("insert heading outside any heading opens a level-1 heading", async () => {
+  let v = open("intro\n\n## A\na");
+  await keys(v, "i");
+  runCommand("insert-heading", v);
+  assert.equal(text(v), "intro\n\n# \n\n## A\na");
+  v = open("text");
+  runCommand("insert-subheading", v);
+  assert.equal(text(v), "text\n# ");
+  v = open("");
+  runCommand("insert-heading", v);
+  assert.equal(text(v), "# \n");
+  assert.equal(v.state.selection.main.head, 2);
+});
+
+test("insert heading treats # lines in a code block as body text", () => {
+  const v = open(CODE);
+  gotoLine(v, 3);
+  runCommand("insert-heading", v);
+  assert.equal(text(v), "## A\n```sh\n# comment\n```\n## \n## B\nb");
+});
+
+test("insert heading and subheading work without vim, and u undoes them", () => {
+  const parent = document.createElement("div");
+  document.body.appendChild(parent);
+  const v = new EditorView({
+    parent,
+    state: EditorState.create({ doc: DOC, extensions: [history(), markdown(), codeFolding(), plugin.extensions] }),
+  });
+  gotoLine(v, 4);
+  runCommand("insert-heading", v);
+  assert.equal(text(v), "# A\na\n## B\nb\n### C\nc\n## \n## D\nd");
+  assert.equal(v.state.selection.main.head, v.state.doc.line(7).to);
+  gotoLine(v, 9);
+  runCommand("insert-subheading", v);
+  assert.equal(text(v), "# A\na\n## B\nb\n### C\nc\n## \n## D\nd\n### ");
+  undo(v);
+  undo(v);
+  assert.equal(text(v), DOC);
+  v.destroy();
 });
 
 test("commands run in normal and insert mode, not in visual mode", async () => {

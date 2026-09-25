@@ -458,6 +458,27 @@ test(">> and << on a body line still indent", async () => {
   assert.equal(text(v), DOC);
 });
 
+test("> and < in visual block mode shift the text right of the block, as in vim", async () => {
+  const v = open("abc\ndef");
+  gotoLine(v, 1);
+  await keys(v, "l<C-v>j>");
+  assert.equal(text(v), "a    bc\nd    ef");
+  assert.equal(v.state.selection.main.head, 1);
+  await keys(v, "<C-v>j<");
+  assert.equal(text(v), "abc\ndef");
+  const w = open("a\t  bc\nd ef");
+  gotoLine(w, 1);
+  await keys(w, "l<C-v>j2<");
+  assert.equal(text(w), "abc\ndef");
+});
+
+test("> in visual block mode shifts headings and items as columns too", async () => {
+  const v = open("# A\n## B\n- x");
+  gotoLine(v, 1);
+  await keys(v, "<C-v>jj>");
+  assert.equal(text(v), "    # A\n    ## B\n    - x");
+});
+
 // --- M-j / M-k ----------------------------------------------------------------
 
 const cursorLine = (view) => view.state.doc.lineAt(view.state.selection.main.head).number;
@@ -2033,6 +2054,13 @@ test("after unload, >> on a heading indents as stock vim does", async () => {
   gotoLine(v, 3);
   await keys(v, ">>");
   assert.match(v.state.doc.line(3).text, /^\s+## B$/);
+});
+
+test("after unload, > in visual block mode shifts the block as stock vim does", async () => {
+  const v = open("abc\ndef");
+  gotoLine(v, 1);
+  await keys(v, "l<C-v>j>");
+  assert.equal(text(v), "a    bc\nd    ef");
 });
 
 test("after unload, d deletes as stock vim does", async () => {

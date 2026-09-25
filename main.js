@@ -503,10 +503,12 @@ function pasteMotion(Vim, after) {
 
 // The stock `indent` operator as it runs on CodeMirror 6 (vim's operator
 // table isn't exposed, so it can't be wrapped): shift the selection vim has
-// just set, then go to the first non-blank of the first line.
+// just set, then go to the first non-blank of the first line. In visual block
+// mode, shift the text right of the block's left edge instead, line by line.
 function stockIndent(cm, args, ranges) {
   const vim = cm.state.vim;
-  const repeat = vim && vim.visualMode ? args.repeat : 1;
+  const repeat = vim && vim.visualMode ? args.repeat || 1 : 1;
+  if (vim && vim.visualBlock) return blockIndent(cm, args, ranges, repeat);
   for (let j = 0; j < repeat; j++) {
     if (args.indentRight) cm.indentMore();
     else cm.indentLess();
@@ -516,13 +518,44 @@ function stockIndent(cm, args, ranges) {
   return new ranges[0].anchor.constructor(line.number - 1, firstNonBlank(line.text));
 }
 
+// The stock visual block `>`/`<`: at the block's left edge on each line, insert
+// `repeat` indents (a tab, or tabSize spaces), or remove up to that many tabs
+// or runs of up to tabSize spaces. The cursor goes to the edge on the top line.
+function blockIndent(cm, args, ranges, repeat) {
+  const tabSize = cm.getOption("tabSize");
+  const indent = cm.getOption("indentWithTabs") ? "\t" : " ".repeat(tabSize);
+  const Pos = ranges[0].anchor.constructor;
+  let cursor;
+  for (let i = ranges.length - 1; i >= 0; i--) {
+    const { anchor, head } = ranges[i];
+    cursor = posBefore(head, anchor) ? head : anchor;
+    if (args.indentRight) {
+      cm.replaceRange(indent.repeat(repeat), cursor, cursor);
+      continue;
+    }
+    const text = cm.getLine(cursor.line);
+    let end = cursor.ch;
+    for (let j = 0; j < repeat; j++) {
+      if (text[end] === "\t") end++;
+      else if (text[end] === " ") {
+        const stop = end + indent.length;
+        while (end < stop && text[end] === " ") end++;
+      } else break;
+    }
+    cm.replaceRange("", cursor, new Pos(cursor.line, end));
+  }
+  return cursor;
+}
+
 // `>`/`<` (and `>>`, `3<<`, `V>`) on headings: promote/demote instead of
 // indenting. expandToLine treats a closed fold as one line, so `>>` on a
 // folded heading shifts its whole subtree (org-demote-subtree) and on an open
 // one just the heading (org-do-demote). Body lines are left alone. A range
 // that starts on a list item shifts items with their sub-items (see
-// indentItems); one that starts on another line indents as usual.
+// indentItems); one that starts on another line indents as usual, and so
+// does a visual block, which shifts columns, not lines.
 function orgIndent(cm, args, ranges) {
+  if (cm.state.vim && cm.state.vim.visualBlock) return stockIndent(cm, args, ranges);
   const view = cm.cm6;
   const state = view.state;
   const doc = state.doc;

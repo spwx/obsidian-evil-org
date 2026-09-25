@@ -214,16 +214,15 @@ function globalCycle(view) {
   const headings = collectHeadings(state);
   const folds = allFolds(state);
   const foldedHeadings = headings.filter((h) => isFolded(folds, h.range));
+  const inner = headings.filter((h) => !h.top && !isFolded(folds, h.range));
   let effects;
-  if (foldedHeadings.some((h) => h.top)) {
-    effects = folds.map((f) => unfoldEffect.of(f));
-  } else if (foldedHeadings.length > 0) {
-    effects = headings.filter((h) => !isFolded(folds, h.range)).map((h) => foldEffect.of(h.range));
+  if (foldedHeadings.length === 0) {
+    effects = headings.filter((h) => h.top).map((h) => foldEffect.of(h.range));
+  } else if (foldedHeadings.some((h) => h.top) && inner.length > 0) {
+    effects = foldedHeadings.filter((h) => h.top).map((h) => unfoldEffect.of(h.range))
+      .concat(inner.map((h) => foldEffect.of(h.range)));
   } else {
-    // With nothing below top level to fold, go straight to overview, or the
-    // cycle never leaves show all.
-    const inner = headings.filter((h) => !h.top);
-    effects = (inner.length > 0 ? inner : headings).map((h) => foldEffect.of(h.range));
+    effects = folds.map((f) => unfoldEffect.of(f));
   }
   if (effects.length > 0) view.dispatch({ effects });
   return true;

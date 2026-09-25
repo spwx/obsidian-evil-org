@@ -146,9 +146,9 @@ test("Tab after a pending operator is left to vim", async () => {
 test("S-Tab cycles overview -> contents -> show all", async () => {
   const v = open(DOC);
   await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), [3, 5, 7]);
+  assert.deepEqual(foldedLines(v), [1]);
   await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), [1, 3, 5, 7]);
+  assert.deepEqual(foldedLines(v), [3, 5, 7]);
   await keys(v, "<S-Tab>");
   assert.deepEqual(foldedLines(v), []);
 });
@@ -156,13 +156,13 @@ test("S-Tab cycles overview -> contents -> show all", async () => {
 test("S-Tab treats the shallowest heading level as top", async () => {
   const v = open("## A\na\n### A1\nx\n## B\nb");
   await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), [3]);
+  assert.deepEqual(foldedLines(v), [1, 5]);
   await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), [1, 3, 5]);
+  assert.deepEqual(foldedLines(v), [3]);
   await keys(v, "<S-Tab>");
   assert.deepEqual(foldedLines(v), []);
   await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), [3]);
+  assert.deepEqual(foldedLines(v), [1, 5]);
 });
 
 test("S-Tab on headings all at one level cycles overview -> show all", async () => {

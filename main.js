@@ -209,20 +209,27 @@ function localCycle(view) {
   return true;
 }
 
+// Overview (only the top-level headings folded) goes to contents (only the
+// headings below them folded), and contents to show all. Any other state,
+// such as show all or a section folded by hand, goes to overview. A note with
+// nothing below top level has no contents step.
 function globalCycle(view) {
   const state = view.state;
   const headings = collectHeadings(state);
   const folds = allFolds(state);
-  const foldedHeadings = headings.filter((h) => isFolded(folds, h.range));
-  const inner = headings.filter((h) => !h.top && !isFolded(folds, h.range));
+  const top = headings.filter((h) => h.top);
+  const inner = headings.filter((h) => !h.top);
+  const folded = (h) => isFolded(folds, h.range);
+  const overview = top.length > 0 && top.every(folded) && !inner.some(folded);
+  const contents = inner.length > 0 && inner.every(folded) && !top.some(folded);
   let effects;
-  if (foldedHeadings.length === 0) {
-    effects = headings.filter((h) => h.top).map((h) => foldEffect.of(h.range));
-  } else if (foldedHeadings.some((h) => h.top) && inner.length > 0) {
-    effects = foldedHeadings.filter((h) => h.top).map((h) => unfoldEffect.of(h.range))
-      .concat(inner.map((h) => foldEffect.of(h.range)));
-  } else {
+  if (overview && inner.length > 0) {
+    effects = top.map((h) => unfoldEffect.of(h.range)).concat(inner.map((h) => foldEffect.of(h.range)));
+  } else if (overview || contents) {
     effects = folds.map((f) => unfoldEffect.of(f));
+  } else {
+    effects = inner.filter(folded).map((h) => unfoldEffect.of(h.range))
+      .concat(top.filter((h) => !folded(h)).map((h) => foldEffect.of(h.range)));
   }
   if (effects.length > 0) view.dispatch({ effects });
   return true;

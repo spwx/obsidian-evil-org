@@ -553,10 +553,10 @@ function blockIndent(cm, args, ranges, repeat) {
 // `>`/`<` (and `>>`, `3<<`, `V>`) on headings: promote/demote instead of
 // indenting. expandToLine treats a closed fold as one line, so `>>` on a
 // folded heading shifts its whole subtree (org-demote-subtree) and on an open
-// one just the heading (org-do-demote). Body lines are left alone. A range
-// that starts on a list item shifts items with their sub-items (see
-// indentItems); one that starts on another line indents as usual, and so
-// does a visual block, which shifts columns, not lines.
+// one just the heading (org-do-demote). Body lines are left alone, also when
+// the range starts on one. A range that starts on a list item shifts items
+// with their sub-items (see indentItems); one without headings indents as
+// usual, and so does a visual block, which shifts columns, not lines.
 function orgIndent(cm, args, ranges) {
   if (cm.state.vim && cm.state.vim.visualBlock) return stockIndent(cm, args, ranges);
   const view = cm.cm6;
@@ -571,8 +571,8 @@ function orgIndent(cm, args, ranges) {
     const line = view.state.doc.line(first);
     return new ranges[0].anchor.constructor(first - 1, firstNonBlank(line.text));
   }
-  if (!levels[first]) return stockIndent(cm, args, ranges);
-  const cursor = new ranges[0].anchor.constructor(first - 1, 0);
+  if (!levels.slice(first, last + 1).some(Boolean)) return stockIndent(cm, args, ranges);
+  const cursor = new ranges[0].anchor.constructor(first - 1, firstNonBlank(doc.line(first).text));
   // Like org, refuse the whole shift if a heading would go past level 1 or
   // MAX_LEVEL: clamping just that one would flatten the subtree.
   const delta = args.indentRight ? steps : -steps;

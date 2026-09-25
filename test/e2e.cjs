@@ -448,6 +448,22 @@ test("V> over headings and body shifts headings only", async () => {
   assert.equal(text(v), "# A\na\n### B\nb\n#### C\nc\n## D\nd");
 });
 
+test("V> from a body line over a heading demotes it and leaves body lines alone", async () => {
+  const v = open(DOC);
+  gotoLine(v, 2);
+  await keys(v, "V3G>");
+  assert.equal(text(v), "# A\na\n### B\nb\n### C\nc\n## D\nd");
+});
+
+test("V> from a body line over no heading still indents", async () => {
+  const v = open("# A\na\nb\n## B");
+  gotoLine(v, 2);
+  await keys(v, "V3G>");
+  assert.match(v.state.doc.line(2).text, /^\s+a$/);
+  assert.match(v.state.doc.line(3).text, /^\s+b$/);
+  assert.equal(v.state.doc.line(4).text, "## B");
+});
+
 test(". repeats and u undoes in one step", async () => {
   const v = open(DOC);
   gotoLine(v, 7);

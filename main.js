@@ -646,10 +646,9 @@ function subtreeTextObject(cm, head, motionArgs, vim) {
 // the next or previous `count` sibling subtrees, keeping the blank lines
 // between them where they were and closed folds closed. In a list, swap the
 // item the cursor is in, with its sub-items, the same way with its sibling
-// items (org-move-item-down/up), and renumber a numbered list. In a table,
-// swap the row with the rows below or above it (org-table-move-row), but not
-// with the header or the delimiter row. On other lines move the line (with the
-// closed fold on it) past `count` lines, a closed fold counting as one line.
+// items (org-move-item-down/up), and renumber a numbered list. On other lines
+// move the line (with the closed fold on it) past `count` lines, a closed fold
+// counting as one line.
 function moveSubtree(view, forward, count) {
   const state = view.state;
   const doc = state.doc;
@@ -682,12 +681,9 @@ function moveSubtree(view, forward, count) {
 }
 
 // What moveSubtree moves from line n, and the line it starts on: a heading's
-// subtree ({ level }), a table row ({ table }), the list item n is in
-// ({ item }), or else the line.
+// subtree ({ level }), the list item n is in ({ item }), or else the line.
 function blockKind(doc, n) {
   const level = headingLevels(doc)[n];
-  const table = !level && enclosingTable(doc, n);
-  if (table) return { table, line: n };
   const item = !level && enclosingItem(doc, n);
   return item ? { item, line: item.line } : { level, line: n };
 }
@@ -716,14 +712,11 @@ function siblingBlocks(doc, folds, kind, block, forward, count) {
 // First line of the block right after or before block, or 0 if there is none.
 // A heading's sibling is the nearest heading of its level or shallower, found
 // past blank lines or deeper subtrees, and only if it has the same level. An
-// item's is the next or previous item of its list (see siblingItem). A table
-// row's is the next or previous row below the delimiter row; the header and
-// the delimiter row have none. A line's is the next line, or the previous one
-// with any closed fold over it.
+// item's is the next or previous item of its list (see siblingItem). A line's
+// is the next line, or the previous one with any closed fold over it.
 function siblingStart(doc, folds, kind, [first, last], forward) {
   const i = forward ? last + 1 : first - 1;
   if (i < 1 || i > doc.lines) return 0;
-  if (kind.table) return first > kind.table.delim && i > kind.table.delim && i <= kind.table.last ? i : 0;
   if (kind.item) return siblingItem(doc, kind.item, i, forward);
   if (!kind.level) return forward ? i : doc.lineAt(foldedLineStart(doc, folds, doc.line(i).from)).number;
   const levels = headingLevels(doc);
@@ -855,206 +848,6 @@ function renumberFrom(doc, folds, item, n, start) {
     i = itemEnd(doc, folds, next) + 1;
   }
   return changes;
-}
-
-// A table's delimiter row, such as `| --- | :-: |`.
-const DELIM_RE = /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
-
-// The table line n is in, as the numbers of its header, delimiter and last
-// rows, or null. A table is a block of lines with `|` in them whose second
-// line is a delimiter row.
-function enclosingTable(doc, n) {
-  const code = scanLines(doc).code;
-  const isRow = (i) => !code[i] && doc.line(i).text.includes("|");
-  if (!isRow(n)) return null;
-  let header = n;
-  while (header > 1 && isRow(header - 1)) header--;
-  const delim = header + 1;
-  if (delim > doc.lines || !isRow(delim) || !DELIM_RE.test(doc.line(delim).text)) return null;
-  let last = delim;
-  while (last < doc.lines && isRow(last + 1)) last++;
-  return { header, delim, last };
-}
-
-// An empty row shaped like the table row `text`: each cell blanked to its
-// width, so an aligned table stays aligned.
-function emptyRow(text) {
-  const indent = text.slice(0, firstNonBlank(text));
-  return indent + text.slice(indent.length).replace(/\\\||[^|]/g, (m) => " ".repeat(m.length));
-}
-
-// The cells of the table row `text`, and its indent. Each cell has the
-// offsets of the text between its pipes (from, to), that text trimmed, and
-// where the trimmed text starts (for an empty cell, one space in). Outer pipes
-// are optional. A `\|` doesn't split a cell, and neither does a `|` in inline
-// code, so aligning a table never changes the text in code.
-function rowCells(text) {
-  const start = firstNonBlank(text);
-  const end = text.trimEnd().length;
-  const seps = [];
-  for (let i = start; i < end; i++) {
-    if (text[i] === "\\") i++;
-    else if (text[i] === "|") seps.push(i);
-    else if (text[i] === "`") {
-      let n = 1;
-      while (text[i + n] === "`") n++;
-      const close = codeSpanEnd(text, i + n, end, n);
-      i = (close < 0 ? i : close) + n - 1;
-    }
-  }
-  const bounds = seps[0] === start ? seps : [start - 1, ...seps];
-  if (bounds.length === 1 || bounds[bounds.length - 1] !== end - 1) bounds.push(end);
-  const cells = [];
-  for (let k = 0; k + 1 < bounds.length; k++) {
-    const from = bounds[k] + 1;
-    const to = bounds[k + 1];
-    const raw = text.slice(from, to);
-    const trimmed = raw.trim();
-    cells.push({ from, to, text: trimmed, start: from + (trimmed ? firstNonBlank(raw) : Math.min(1, raw.length)) });
-  }
-  return { indent: text.slice(0, start), cells };
-}
-
-// Start of the run of exactly n backticks that closes a code span, from
-// offset i on, or -1.
-function codeSpanEnd(text, i, end, n) {
-  while (i < end) {
-    if (text[i] !== "`") {
-      i++;
-      continue;
-    }
-    let k = 1;
-    while (text[i + k] === "`") k++;
-    if (k === n) return i;
-    i += k;
-  }
-  return -1;
-}
-
-// Columns a string takes up in a monospace font: two for each wide (East
-// Asian) character or emoji, none for a combining mark, else one. It works
-// by grapheme where Intl.Segmenter is available. This is an estimate: fonts
-// differ, and Obsidian's default font isn't monospace.
-const WIDE_RE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦\u{20000}-\u{3FFFD}️]|\p{Emoji_Presentation}/u;
-const ZERO_RE = /^[\p{M}\p{Cf}]+$/u;
-const segmenter = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter() : null;
-
-function displayWidth(s) {
-  if (/^[\x20-\x7e]*$/.test(s)) return s.length;
-  const parts = segmenter ? Array.from(segmenter.segment(s), (p) => p.segment) : Array.from(s);
-  return parts.reduce((w, g) => w + (WIDE_RE.test(g) ? 2 : ZERO_RE.test(g) ? 0 : 1), 0);
-}
-
-// The alignment a delimiter cell sets: `:--` left, `--:` right, `:-:`
-// center, and "" (left) for `---`.
-function cellAlign(cell) {
-  const m = cell.match(/^(:?)-+(:?)$/);
-  return !m ? "" : m[1] && m[2] ? "center" : m[1] ? "left" : m[2] ? "right" : "";
-}
-
-// The lines of a table (org-table-align): rows of cell texts, the second the
-// delimiter row, each padded to the widest cell of its column as its
-// alignment says. The delimiter row is rebuilt with dashes to that width,
-// keeping its colons. Each line gets the table's indent and outer pipes.
-function formatTable(indent, rows) {
-  const aligns = rows[1].map(cellAlign);
-  const widths = aligns.map((a, c) =>
-    Math.max(a === "center" ? 3 : a ? 2 : 1, ...rows.map((r, k) => (k === 1 ? 0 : displayWidth(r[c])))));
-  return rows.map((r, k) => {
-    const cells = r.map((t, c) => {
-      const w = widths[c];
-      const a = aligns[c];
-      if (k === 1) return a === "center" ? `:${"-".repeat(w - 2)}:` : a === "left" ? `:${"-".repeat(w - 1)}` : a === "right" ? `${"-".repeat(w - 1)}:` : "-".repeat(w);
-      const gap = w - displayWidth(t);
-      const left = a === "right" ? gap : a === "center" ? Math.floor(gap / 2) : 0;
-      return " ".repeat(left) + t + " ".repeat(gap - left);
-    });
-    return `${indent}| ${cells.join(" | ")} |`;
-  });
-}
-
-// The table at the cursor and the cursor's place in it, or null outside a
-// table: the table's lines (see enclosingTable), its indent and its rows of
-// cell texts, all as long as the longest row; the cursor's row (0 is the
-// header, 1 the delimiter row) and cell, and how far into the cell's text.
-function tableCursor(state) {
-  const doc = state.doc;
-  const head = state.selection.main.head;
-  const line = doc.lineAt(head);
-  const table = enclosingTable(doc, line.number);
-  if (!table) return null;
-  const rows = [];
-  for (let i = table.header; i <= table.last; i++) rows.push(rowCells(doc.line(i).text).cells.map((c) => c.text));
-  const cols = Math.max(...rows.map((r) => r.length));
-  for (const r of rows) while (r.length < cols) r.push("");
-  const cells = rowCells(line.text).cells;
-  const ch = head - line.from;
-  let col = cells.findIndex((c) => ch <= c.to);
-  if (col < 0) col = cells.length - 1;
-  const cell = cells[col];
-  const offset = Math.max(0, Math.min(ch - cell.start, cell.text.length));
-  return { table, indent: rowCells(doc.line(table.header).text).indent, rows, row: line.number - table.header, col, offset };
-}
-
-// Replace the table's lines with its rows, aligned, in one change, and put
-// the cursor `offset` characters into the text of cell `col` of row `row`.
-// Rows past the table's last line are added below it. Lines that don't change
-// aren't touched.
-function writeTable(view, { table, indent, rows }, row, col, offset) {
-  const state = view.state;
-  const doc = state.doc;
-  const lines = formatTable(indent, rows);
-  const count = table.last - table.header + 1;
-  const changes = [];
-  for (let k = 0; k < count; k++) {
-    const line = doc.line(table.header + k);
-    const insert = k < count - 1 ? lines[k] : lines.slice(k).join("\n");
-    if (insert !== line.text) changes.push({ from: line.from, to: line.to, insert });
-  }
-  const set = state.changes(changes);
-  const cell = rowCells(lines[row]).cells[col];
-  const anchor = set.apply(doc).line(table.header + row).from + cell.start + Math.min(offset, cell.text.length);
-  view.dispatch({ changes: set, selection: { anchor }, scrollIntoView: true, userEvent: "input" });
-  return true;
-}
-
-// org-table-align: align the table at the cursor, which stays in its cell.
-function alignTable(view) {
-  const t = tableCursor(view.state);
-  return !!t && writeTable(view, t, t.row, t.col, t.offset);
-}
-
-// org-table-next-field / org-table-previous-field (TAB / S-TAB in a table):
-// align the table and go to the start of the next or previous cell, row by
-// row, past the delimiter row. From the last cell, a new row opens below the
-// table; from the first, the cursor stays. False outside a table.
-function tableField(view, forward) {
-  const t = tableCursor(view.state);
-  if (!t) return false;
-  const cols = t.rows[0].length;
-  let { row, col } = t;
-  // On the delimiter row, the next cell is the first below it, and the
-  // previous one the last of the header.
-  if (row === 1) col = forward ? cols - 1 : 0;
-  col += forward ? 1 : -1;
-  if (col === cols) [row, col] = [row + 1, 0];
-  if (col < 0) [row, col] = [row - 1, cols - 1];
-  if (row === 1) row += forward ? 1 : -1;
-  if (row < 0) [row, col] = [0, 0];
-  if (row === t.rows.length) t.rows.push(Array(cols).fill(""));
-  return writeTable(view, t, row, col, 0);
-}
-
-// org-table-move-column-left/right (M-← / M-→ in a table): move the column at
-// the cursor past `count` columns, with its alignment, and align the table.
-// The cursor stays in its cell. False outside a table or at its edge.
-function moveColumn(view, right, count) {
-  const t = tableCursor(view.state);
-  if (!t) return false;
-  const to = Math.max(0, Math.min(t.rows[0].length - 1, t.col + (right ? count : -count)));
-  if (to === t.col) return false;
-  for (const r of t.rows) r.splice(to, 0, r.splice(t.col, 1)[0]);
-  return writeTable(view, t, t.row, to, t.offset);
 }
 
 // A block quote line; a callout is a quote whose first line is `> [!type]`.
@@ -1203,7 +996,7 @@ function indentItems(view, first, last, right, steps) {
 }
 
 // The Markdown elements that contain line n, innermost first, for `ae`/`ie`:
-// a code block, front matter, heading line, table, block quote or paragraph;
+// a code block, front matter, heading line, block quote or paragraph;
 // then each list item and list around it; then each subtree around it. Each
 // has an `outer` range (its lines and the blank lines after them) and an
 // `inner` one: character offsets for an item's or heading's text, else lines;
@@ -1232,7 +1025,6 @@ function elementsAt(state, n) {
   };
   const text = (i) => doc.line(i).text;
   const block = blocks.find((b) => b.first <= m && m <= b.last);
-  const table = !code[m] && enclosingTable(doc, m);
   let top = m; // the element's first line, where the items around it are found
   if (block) {
     add(block.first, block.last, lines(block.first + 1, block.closed ? block.last - 1 : block.last));
@@ -1240,9 +1032,6 @@ function elementsAt(state, n) {
   } else if (levels[m]) {
     const line = doc.line(m);
     add(m, m, chars(line.from + line.text.match(/^#+\s*/)[0].length, line.to));
-  } else if (table) {
-    add(table.header, table.last, lines(table.delim + 1, table.last));
-    top = table.header;
   } else if (QUOTE_RE.test(text(m))) {
     const quote = (i) => !code[i] && QUOTE_RE.test(text(i));
     let last = m;
@@ -1255,7 +1044,7 @@ function elementsAt(state, n) {
     // item's first line are the item itself.
     const item = enclosingItem(doc, m);
     const plain = (i) => !isBlank(text(i)) && !code[i] && !levels[i] && !QUOTE_RE.test(text(i)) &&
-      !RULE_RE.test(text(i)) && !listItem(doc, i) && !enclosingTable(doc, i) &&
+      !RULE_RE.test(text(i)) && !listItem(doc, i) &&
       (!item || firstNonBlank(text(i)) > item.indent.length);
     let last = m;
     if (plain(m)) {
@@ -1363,11 +1152,8 @@ function openLineChange(doc, target, after, text, above = 0, below = 0) {
   return { insert, newLine };
 }
 
-// `o`/`O` (evil-org-open-below/above). In a table, open an empty row below or
-// above the row, with the cursor in its first cell; `o` on the header opens
-// the first row under the delimiter row, and `O` there opens a plain line above
-// the table. In a list item, open a new item after the item and its
-// sub-items, or before the item: same indent and bullet, the next number
+// `o`/`O` (evil-org-open-below/above). In a list item, open a new item after
+// the item and its sub-items, or before the item: same indent and bullet, the next number
 // (renumbering the items after it), and an empty checkbox if the item has one.
 // On a heading, open a plain line, as in vim. On a closed fold `o` opens a
 // line below the whole fold, not inside it. Elsewhere `o`/`O` are the stock
@@ -1382,18 +1168,10 @@ function openLine(cm, args, vim) {
   const n = doc.lineAt(state.selection.main.head).number;
   const lineText = doc.line(n).text;
   const indent = lineText.slice(0, firstNonBlank(lineText));
-  const table = enclosingTable(doc, n);
-  const item = !table && enclosingItem(doc, n);
-  let target, text, col;
+  const item = enclosingItem(doc, n);
+  let target, text;
   let renumber = [];
-  if (table && n <= table.delim && !args.after) {
-    target = table.header;
-    text = indent;
-  } else if (table) {
-    target = n <= table.delim ? table.delim : n;
-    text = emptyRow(lineText);
-    col = indent.length + text.slice(indent.length).match(/^(?:\| ?)?/)[0].length;
-  } else if (item) {
+  if (item) {
     target = args.after ? itemEnd(doc, folds, item) : item.line;
     const marker = item.delim ? `${Number(item.digits) + (args.after ? 1 : 0)}${item.delim}` : item.bullet;
     text = `${item.indent}${marker} ${item.checkbox ? "[ ] " : ""}`;
@@ -1403,12 +1181,11 @@ function openLine(cm, args, vim) {
     if (target === n) return this.newLineAndEnterInsertMode(cm, args, vim);
     text = indent;
   }
-  if (col === undefined) col = text.length;
   const { insert, newLine } = openLineChange(doc, target, args.after, text);
   const changes = state.changes([insert, ...renumber]);
-  const cursor = changes.apply(doc).line(newLine).from + col;
+  const cursor = changes.apply(doc).line(newLine).from + text.length;
   view.dispatch({ changes, selection: { anchor: cursor }, scrollIntoView: true, userEvent: "input" });
-  const head = new cm.constructor.Pos(newLine - 1, col);
+  const head = new cm.constructor.Pos(newLine - 1, text.length);
   this.enterInsertMode(cm, { repeat: args.repeat, head }, vim);
 }
 
@@ -1432,7 +1209,7 @@ function insertHeading(view, deeper) {
 }
 
 // The letters of the Alt keys handleAltMove catches, by key code.
-const ALT_CODES = { KeyH: "h", KeyJ: "j", KeyK: "k", KeyL: "l" };
+const ALT_CODES = { KeyJ: "j", KeyK: "k" };
 
 // Command ids and names are user-facing: hotkeys are bound to the ids.
 const COMMANDS = [
@@ -1442,9 +1219,6 @@ const COMMANDS = [
   ["move-subtree-up", "Move subtree up (M-↑ in org-mode)", (view) => moveSubtree(view, false, 1)],
   ["insert-heading", "Insert heading (M-RET in org-mode)", (view) => insertHeading(view, false)],
   ["insert-subheading", "Insert subheading", (view) => insertHeading(view, true)],
-  ["align-table", "Align table", alignTable],
-  ["move-table-column-left", "Move table column left", (view) => moveColumn(view, false, 1)],
-  ["move-table-column-right", "Move table column right", (view) => moveColumn(view, true, 1)],
 ];
 
 module.exports = class EvilOrgPlugin extends Plugin {
@@ -1484,12 +1258,6 @@ module.exports = class EvilOrgPlugin extends Plugin {
     }));
     Vim.mapCommand("<A-j>", "action", "orgMoveSubtree", { forward: true }, { context: "normal", isEdit: true });
     Vim.mapCommand("<A-k>", "action", "orgMoveSubtree", { forward: false }, { context: "normal", isEdit: true });
-    // M-h / M-l move the table column (M-← / M-→ in org-mode).
-    Vim.defineAction("orgMoveColumn", guarded((cm, args) => {
-      if (cm.cm6) moveColumn(cm.cm6, args.right, args.repeat || 1);
-    }));
-    Vim.mapCommand("<A-h>", "action", "orgMoveColumn", { right: false }, { context: "normal", isEdit: true });
-    Vim.mapCommand("<A-l>", "action", "orgMoveColumn", { right: true }, { context: "normal", isEdit: true });
     // `ar`/`ir` shadow vim's `a<register>`/`i<register>` text objects for `r`,
     // which vim leaves undefined.
     Vim.defineMotion("orgSubtree", subtreeTextObject);
@@ -1513,7 +1281,6 @@ module.exports = class EvilOrgPlugin extends Plugin {
     (this.vimRestorers ||= []).push(() => {
       Vim.defineMotion("expandToLine", original);
       Vim.defineAction("orgMoveSubtree", () => {});
-      Vim.defineAction("orgMoveColumn", () => {});
       Vim.defineMotion("orgSubtree", () => null);
       Vim.defineMotion("orgElement", () => null);
       Vim.defineAction("orgOpenLine", function (cm, args, vim) {
@@ -1530,19 +1297,16 @@ module.exports = class EvilOrgPlugin extends Plugin {
   // On macOS Option-j arrives as `∆` with code "KeyJ", and some vim builds
   // strip the Alt modifier rather than restoring it from the code, leaving a
   // bare `j`. Catch Alt-j/Alt-k before any editor handler sees them and give
-  // vim <A-j>/<A-k> directly, which keeps counts and `.` working. Alt-h/Alt-l
-  // are caught the same way, but only in a table: elsewhere they stay free.
+  // vim <A-j>/<A-k> directly, which keeps counts and `.` working.
   handleAltMove(e) {
     if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-    const letter = ALT_CODES[e.code] || (/^[hjkl]$/.test(e.key) ? e.key : null);
+    const letter = ALT_CODES[e.code] || (/^[jk]$/.test(e.key) ? e.key : null);
     const Vim = this.patchedVim;
     if (!letter || !Vim) return;
     const view = activeEditorView(this.app);
     if (!view || !view.dom.contains(e.target)) return;
     // A pending count is kept in the key buffer; let it through to vim.
     if (!normalMode(view, true)) return;
-    const state = view.state;
-    if ("hl".includes(letter) && !enclosingTable(state.doc, state.doc.lineAt(state.selection.main.head).number)) return;
     e.preventDefault();
     e.stopPropagation();
     Vim.handleKey(view.cm, `<A-${letter}>`, "user");
@@ -1561,15 +1325,14 @@ module.exports = class EvilOrgPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.installVimOverrides()));
     this.registerDomEvent(document, "keydown", (e) => this.handleAltMove(e), { capture: true });
     // Tab cycles only in normal mode; elsewhere it's left to vim and the editor.
-    // In a table, which is never a heading, it goes from cell to cell instead.
     const tab = (fn) => guarded((view) => normalMode(view) && fn(view));
     this.registerEditorExtension([
       Prec.highest(
         keymap.of([
           {
             key: "Tab",
-            run: tab((view) => tableField(view, true) || localCycle(view)),
-            shift: tab((view) => tableField(view, false) || globalCycle(view)),
+            run: tab(localCycle),
+            shift: tab(globalCycle),
           },
         ])
       ),

@@ -1157,7 +1157,8 @@ function openLineChange(doc, target, after, text, above = 0, below = 0) {
 
 // `o`/`O` (evil-org-open-below/above). In a list item, open a new item after
 // the item and its sub-items, or before the item: same indent and bullet, the next number
-// (renumbering the items after it), and an empty checkbox if the item has one.
+// (numbering the items after it in sequence from it), and an empty checkbox if
+// the item has one.
 // On a heading, open a plain line, as in vim. On a closed fold `o` opens a
 // line below the whole fold, not inside it. Elsewhere `o`/`O` are the stock
 // ones. Vim calls actions as methods of its action table, so `this` holds the
@@ -1176,9 +1177,9 @@ function openLine(cm, args, vim) {
   let renumber = [];
   if (item) {
     target = args.after ? itemEnd(doc, folds, item) : item.line;
-    const marker = item.delim ? `${Number(item.digits) + (args.after ? 1 : 0)}${item.delim}` : item.bullet;
-    text = `${item.indent}${marker} ${item.checkbox ? "[ ] " : ""}`;
-    if (item.delim) renumber = renumberFrom(doc, folds, item, args.after ? target + 1 : item.line);
+    const number = Number(item.digits) + (args.after ? 1 : 0);
+    text = `${item.indent}${item.delim ? number + item.delim : item.bullet} ${item.checkbox ? "[ ] " : ""}`;
+    if (item.delim) renumber = renumberFrom(doc, folds, item, args.after ? target + 1 : item.line, number + 1);
   } else {
     target = args.after ? foldedLastLine(doc, folds, n) : n;
     if (target === n) return this.newLineAndEnterInsertMode(cm, args, vim);

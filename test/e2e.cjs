@@ -1421,6 +1421,16 @@ test("o in a numbered list numbers the new item and renumbers the rest", async (
   assert.equal(text(v), "1. a\n2. \n3. \n4. b\n3) c\n\n1. d");
 });
 
+test("o and O number the items after the new one in sequence", async () => {
+  let v = open("1. a\n1. b\n1. c");
+  await keys(v, "o");
+  assert.equal(text(v), "1. a\n2. \n3. b\n4. c");
+  v = open("1. a\n1. b\n1. c");
+  gotoLine(v, 2);
+  await keys(v, "O");
+  assert.equal(text(v), "1. a\n1. \n2. b\n3. c");
+});
+
 test("O on the first item of a numbered list at the top of the note", async () => {
   const v = open("1. a\n2. b");
   await keys(v, "O");

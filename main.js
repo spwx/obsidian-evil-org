@@ -215,7 +215,10 @@ function globalCycle(view) {
   } else if (foldedHeadings.length > 0) {
     effects = headings.filter((h) => !isFolded(folds, h.range)).map((h) => foldEffect.of(h.range));
   } else {
-    effects = headings.filter((h) => !h.top).map((h) => foldEffect.of(h.range));
+    // With nothing below top level to fold, go straight to overview, or the
+    // cycle never leaves show all.
+    const inner = headings.filter((h) => !h.top);
+    effects = (inner.length > 0 ? inner : headings).map((h) => foldEffect.of(h.range));
   }
   if (effects.length > 0) view.dispatch({ effects });
   return true;

@@ -165,6 +165,14 @@ test("S-Tab treats the shallowest heading level as top", async () => {
   assert.deepEqual(foldedLines(v), [3]);
 });
 
+test("S-Tab on headings all at one level cycles overview -> show all", async () => {
+  const v = open("# A\na\n# B\nb\n# C\nc");
+  await keys(v, "<S-Tab>");
+  assert.deepEqual(foldedLines(v), [1, 3, 5]);
+  await keys(v, "<S-Tab>");
+  assert.deepEqual(foldedLines(v), []);
+});
+
 test("dd on a folded heading deletes the subtree", async () => {
   const v = open(DOC);
   fold(v, 3);

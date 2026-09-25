@@ -1490,6 +1490,22 @@ test("o on an item's body line opens an item after that item", async () => {
   assert.equal(text(v), "- a\n  more\n- \n- b");
 });
 
+test("o and O in a code block in an item open plain lines", async () => {
+  const doc = "1. a\n   ```\n   code\n   ```\n2. b";
+  let v = open(doc);
+  gotoLine(v, 3);
+  await keys(v, "o");
+  type(v, "x");
+  await keys(v, "<Esc>");
+  assert.equal(text(v), "1. a\n   ```\n   code\n   x\n   ```\n2. b");
+  v = open(doc);
+  gotoLine(v, 3);
+  await keys(v, "O");
+  type(v, "x");
+  await keys(v, "<Esc>");
+  assert.equal(text(v), "1. a\n   ```\n   x\n   code\n   ```\n2. b");
+});
+
 test("o on the last line of the note opens an item", async () => {
   const v = open("- a");
   await keys(v, "o");

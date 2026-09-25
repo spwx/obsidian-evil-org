@@ -1170,7 +1170,8 @@ function openLineChange(doc, target, after, text, above = 0, below = 0) {
 // the item and its sub-items, or before the item: same indent and bullet, the next number
 // (numbering the items after it in sequence from it), and an empty checkbox if
 // the item has one.
-// On a heading, open a plain line, as in vim. On a closed fold `o` opens a
+// On a heading, or in a code block or front matter even inside an item, open
+// a plain line, as in vim. On a closed fold `o` opens a
 // line below the whole fold, not inside it. Elsewhere `o`/`O` are the stock
 // ones. Vim calls actions as methods of its action table, so `this` holds the
 // stock actions.
@@ -1183,7 +1184,7 @@ function openLine(cm, args, vim) {
   const n = doc.lineAt(state.selection.main.head).number;
   const lineText = doc.line(n).text;
   const indent = lineText.slice(0, firstNonBlank(lineText));
-  const item = enclosingItem(doc, n);
+  const item = !scanLines(doc).code[n] && enclosingItem(doc, n);
   let target, text;
   let renumber = [];
   if (item) {

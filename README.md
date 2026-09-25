@@ -48,6 +48,19 @@ Nine actions are also Obsidian commands. You can set hotkeys for them in **Setti
 
 These commands do not have default hotkeys. You must set the hotkeys yourself. Different from the keys in the table, these commands also operate in insert mode and when Vim mode is off. In Vim normal mode, the insert commands go to insert mode.
 
+### Use Alt-Enter to insert a heading
+
+In org-mode, `M-RET` inserts a heading. To use `Alt-Enter` for **Insert heading**, do these steps:
+
+1. Open **Settings → Hotkeys**.
+2. Type "Follow link under cursor" in the search field. In Obsidian, `Alt-Enter` is the default hotkey of this command. Remove this hotkey. If you want to follow links from the keyboard, set a different hotkey for this command.
+3. Type "Insert heading" in the search field.
+4. Set the hotkey of **Insert heading (M-RET in org-mode)** to `Alt-Enter`.
+
+If you do not remove the hotkey of **Follow link under cursor**, `Alt-Enter` does not insert a heading.
+
+You cannot map `Alt-Enter` in a vimrc file. Obsidian gets its hotkeys before Vim does, so Vim does not get `Alt-Enter`.
+
 ## Installation
 
 To install the plugin from Obsidian:

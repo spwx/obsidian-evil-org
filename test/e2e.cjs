@@ -492,6 +492,13 @@ test(">> on a # line in front matter indents it, not demotes it", async () => {
   assert.match(v.state.doc.line(2).text, /^\s+# note: yaml$/);
 });
 
+test(">> after an unclosed --- on line 1 demotes the heading", async () => {
+  const v = open("---\n# A\na\n# B\nb");
+  gotoLine(v, 2);
+  await keys(v, ">>");
+  assert.equal(text(v), "---\n## A\na\n# B\nb");
+});
+
 test("a pasted subtree with a # line in a code block arrives folded", async () => {
   const v = open(CODE);
   await keys(v, "yarGp");

@@ -80,8 +80,10 @@ const isBlank = (text) => text.trim() === "";
 // One scan of the lines (index n for 1-based line n): `levels` holds each
 // line's heading level, 0 for lines that aren't headings, and `code` is true
 // for lines in front matter or fenced code blocks, where `#` lines aren't
-// headings and `-` lines aren't list items. `blocks` lists those blocks as
-// their first and last lines, and whether a closing line ends them. A Text
+// headings and `-` lines aren't list items. As in Obsidian, a `---` on line 1
+// starts front matter only when a closing line follows; an unclosed fence
+// runs to the end of the note. `blocks` lists those blocks as their first and
+// last lines, and whether a closing line ends them. A Text
 // never changes, so the scan is cached per doc: callers ask again freely
 // instead of passing it around. The arrays are shared, hence frozen.
 const scanCache = new WeakMap();
@@ -116,7 +118,10 @@ function scanDoc(doc) {
     }
     const fence = text.match(/^ {0,3}(`{3,}|~{3,})/);
     if (fence) close = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}\\s*$`);
-    else if (i === 1 && text === "---") close = /^(---|\.\.\.)\s*$/;
+    else if (i === 1 && text === "---") {
+      const end = /^(---|\.\.\.)\s*$/;
+      for (let j = 2; j <= doc.lines && !close; j++) if (end.test(doc.line(j).text)) close = end;
+    }
     if (close) blocks.push({ first: i, last: i, closed: false });
     levels.push(close ? 0 : headingLevel(text));
     code.push(!!close);

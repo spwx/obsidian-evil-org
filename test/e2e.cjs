@@ -390,6 +390,32 @@ test("<< on a level-1 heading and >> on a level-6 heading do nothing", async () 
   assert.equal(text(v), "# A\na\n###### F\nf");
 });
 
+test(">> on a folded subtree with a level-6 heading changes nothing", async () => {
+  const v = open("##### a\n###### b\nx\n##### c");
+  fold(v, 1);
+  gotoLine(v, 1);
+  await keys(v, ">>");
+  assert.equal(text(v), "##### a\n###### b\nx\n##### c");
+  assert.deepEqual(foldedLines(v), [1]);
+});
+
+test("<< on a folded subtree whose root is level 1 changes nothing", async () => {
+  const v = open("# A\n## B\nb\n# C");
+  fold(v, 1);
+  gotoLine(v, 1);
+  await keys(v, "<<");
+  assert.equal(text(v), "# A\n## B\nb\n# C");
+  assert.deepEqual(foldedLines(v), [1]);
+});
+
+test("V2> refuses to take a level-5 heading past 6, V> still demotes it", async () => {
+  const v = open("##### a\nx");
+  await keys(v, "V2>");
+  assert.equal(text(v), "##### a\nx");
+  await keys(v, "V>");
+  assert.equal(text(v), "###### a\nx");
+});
+
 test("a line of seven #s is body text: >> indents it, ar goes past it", async () => {
   const v = open("## A\n####### x\n## B");
   gotoLine(v, 2);

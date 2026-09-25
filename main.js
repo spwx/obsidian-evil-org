@@ -569,6 +569,13 @@ function orgIndent(cm, args, ranges) {
     return new ranges[0].anchor.constructor(first - 1, firstNonBlank(line.text));
   }
   if (!levels[first]) return stockIndent(cm, args, ranges);
+  const cursor = new ranges[0].anchor.constructor(first - 1, 0);
+  // Like org, refuse the whole shift if a heading would go past level 1 or
+  // MAX_LEVEL: clamping just that one would flatten the subtree.
+  const delta = args.indentRight ? steps : -steps;
+  for (let i = first; i <= last; i++) {
+    if (levels[i] && (levels[i] + delta < 1 || levels[i] + delta > MAX_LEVEL)) return cursor;
+  }
   const folds = allFolds(state);
   const changes = [];
   const closed = [];
@@ -576,12 +583,10 @@ function orgIndent(cm, args, ranges) {
     const level = levels[i];
     if (!level) continue;
     const line = doc.line(i);
-    const next = args.indentRight ? Math.min(MAX_LEVEL, level + steps) : Math.max(1, level - steps);
-    if (next > level) changes.push({ from: line.from, insert: "#".repeat(next - level) });
-    else if (next < level) changes.push({ from: line.from, to: line.from + level - next });
+    if (delta > 0) changes.push({ from: line.from, insert: "#".repeat(delta) });
+    else changes.push({ from: line.from, to: line.from - delta });
     closed.push(...folds.filter((f) => f.from === line.to));
   }
-  if (changes.length === 0) return new ranges[0].anchor.constructor(first - 1, 0);
   const tr = state.update({ changes, userEvent: "input.indent" });
   view.dispatch(tr);
   // Vim opens folds under the operator's range once it finishes; close them
@@ -589,7 +594,7 @@ function orgIndent(cm, args, ranges) {
   // to take in the sections that are now its children.
   const refold = closed.map((f) => ({ from: tr.changes.mapPos(f.from), to: tr.changes.mapPos(f.to) }));
   if (refold.length > 0) afterVim(view, () => foldRanges(view, refold));
-  return new ranges[0].anchor.constructor(first - 1, 0);
+  return cursor;
 }
 
 // The heading whose section contains line n, then its ancestors, innermost first.

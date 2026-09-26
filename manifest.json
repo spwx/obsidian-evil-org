@@ -1,7 +1,7 @@
 {
   "id": "evil-org",
   "name": "Evil Org",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "minAppVersion": "1.0.0",
   "description": "Org-mode headline editing for Vim mode: Tab/Shift-Tab fold cycling, folded headings that act as one line, >>/<< promote/demote, Alt-j/Alt-k subtree moves and ar/ir subtree text objects.",
   "author": "spwx",

@@ -1506,6 +1506,34 @@ test("o and O in a code block in an item open plain lines", async () => {
   assert.equal(text(v), "1. a\n   ```\n   x\n   code\n   ```\n2. b");
 });
 
+test("o in a tab-indented code block in an item opens a plain line", async () => {
+  const v = open("- a\n\t```\n\t- code\n\t```\n- b");
+  gotoLine(v, 3);
+  await keys(v, "o");
+  type(v, "x");
+  await keys(v, "<Esc>");
+  // Stock o keeps the indent, in spaces here: the harness's indent unit.
+  assert.equal(text(v), "- a\n\t```\n\t- code\n    x\n\t```\n- b");
+});
+
+test("o in a code block in a nested item opens a plain line", async () => {
+  const v = open("- a\n  - b\n    ```\n    - code\n    ```");
+  gotoLine(v, 4);
+  await keys(v, "o");
+  type(v, "x");
+  await keys(v, "<Esc>");
+  assert.equal(text(v), "- a\n  - b\n    ```\n    - code\n    x\n    ```");
+});
+
+test(">> and << on a - line in a tab-indented code block shift it as text", async () => {
+  const v = open("- a\n\t```\n\t- code\n\t```\n- b");
+  gotoLine(v, 3);
+  await keys(v, ">>");
+  assert.equal(text(v), "- a\n\t```\n  \t- code\n\t```\n- b");
+  await keys(v, "<<<<");
+  assert.equal(text(v), "- a\n\t```\n- code\n\t```\n- b");
+});
+
 test("o on the last line of the note opens an item", async () => {
   const v = open("- a");
   await keys(v, "o");

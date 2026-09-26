@@ -76,7 +76,7 @@ Obsidian does not have a public API for its Vim mode. For this reason, the plugi
 
 - It changes the `expandToLine` motion so that the motion includes folded lines.
 - It maps `o`, `O`, `p`, `P`, `d`, `>`, `<`, `<A-j>`, `<A-k>`, `ar`, `ir`, `ae`, and `ie`. In visual mode, it also maps `x`, `X`, and `D`.
-- It gets `Alt-j` and `Alt-k` by their key codes in Vim normal mode, before the editor gets them. On macOS, the Vim mode of Obsidian can lose the Alt modifier. For example, `Option-j` gives `∆`.
+- It gets `Alt-j` and `Alt-k` in Vim normal mode, before the editor and Obsidian's hotkeys get them. Thus, in Vim normal mode, an Obsidian hotkey that you set to `Alt-j` or `Alt-k` does not operate. The plugin gets the keys by the letter that you type. If the key does not give a letter, the plugin uses the key code. On macOS, the Vim mode of Obsidian can lose the Alt modifier. For example, `Option-j` gives `∆`.
 - It adds a `Tab` and `Shift-Tab` key binding to the editor. The binding operates only in Vim normal mode.
 - It gets the CodeMirror 6 view from `editor.cm`.
 

@@ -388,22 +388,21 @@ function afterVim(view, fn) {
 // `dd`, `yy`, `cc`, `>>`, `Y` and counts like `3dd` all use the expandToLine
 // motion. Vim treats a closed fold as one line, so a count steps over whole
 // folds and the range runs to the end of the last fold it lands on.
-const plainExpandToLine = (_cm, head, args) => new head.constructor(head.line + args.repeat - 1, Infinity);
+// Vim can't hand back a motion it has defined, so this is the stock one,
+// copied, for unfolded text and for unload.
+const stockExpandToLine = (_cm, head, args) => new head.constructor(head.line + args.repeat - 1, Infinity);
 
-function foldAwareExpandToLine(original) {
-  return function (cm, head, args, ...rest) {
-    const view = cm && cm.cm6;
-    if (!view) return original.call(this, cm, head, args, ...rest);
-    const doc = view.state.doc;
-    const folds = allFolds(view.state);
-    if (folds.length === 0) return original.call(this, cm, head, args, ...rest);
-    let line = head.line + 1; // CodeMirror 6 lines are 1-based
-    for (let i = 0; i < args.repeat; i++) {
-      if (i > 0) line = Math.min(line + 1, doc.lines);
-      line = foldedLastLine(doc, folds, line);
-    }
-    return new head.constructor(line - 1, Infinity);
-  };
+function foldAwareExpandToLine(cm, head, args) {
+  const view = cm && cm.cm6;
+  const folds = view ? allFolds(view.state) : [];
+  if (folds.length === 0) return stockExpandToLine(cm, head, args);
+  const doc = view.state.doc;
+  let line = head.line + 1; // CodeMirror 6 lines are 1-based
+  for (let i = 0; i < args.repeat; i++) {
+    if (i > 0) line = Math.min(line + 1, doc.lines);
+    line = foldedLastLine(doc, folds, line);
+  }
+  return new head.constructor(line - 1, Infinity);
 }
 
 const firstNonBlank = (text) => text.length - text.trimStart().length;
@@ -1243,8 +1242,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
   installVimOverrides() {
     const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
     if (!Vim || Vim === this.patchedVim) return;
-    const original = (Vim.getMotion && Vim.getMotion("expandToLine")) || plainExpandToLine;
-    Vim.defineMotion("expandToLine", foldAwareExpandToLine(original));
+    Vim.defineMotion("expandToLine", foldAwareExpandToLine);
     // A command's motion runs before its action; these entries shadow the
     // stock `p`/`P` in normal mode (visual-mode paste is untouched).
     Vim.defineMotion("orgPasteAfter", pasteMotion(Vim, true));
@@ -1293,11 +1291,10 @@ module.exports = class EvilOrgPlugin extends Plugin {
         { isEdit: true, interlaceInsertRepeat: true, context: "normal" });
     }
     // Every engine patched keeps the overrides until unload, not just the
-    // current one. Unload runs these last-first, so an engine patched twice
-    // (swapped out and back) ends up with its stock originals.
+    // current one.
     this.patchedVim = Vim;
     (this.vimRestorers ||= []).push(() => {
-      Vim.defineMotion("expandToLine", original);
+      Vim.defineMotion("expandToLine", stockExpandToLine);
       Vim.defineAction("orgMoveSubtree", () => {});
       Vim.defineMotion("orgSubtree", () => null);
       Vim.defineMotion("orgElement", () => null);

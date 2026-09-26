@@ -1225,7 +1225,8 @@ function insertHeading(view, deeper) {
   if (Vim && normalMode(view)) Vim.handleKey(view.cm, "A", "user");
 }
 
-// The letters of the Alt keys handleAltMove catches, by key code.
+// The letters of the Alt keys handleAltMove catches, by key code, for when
+// the key isn't a letter (macOS Option-j is `∆`).
 const ALT_CODES = { KeyJ: "j", KeyK: "k" };
 
 // Command ids and names are user-facing: hotkeys are bound to the ids.
@@ -1314,10 +1315,13 @@ module.exports = class EvilOrgPlugin extends Plugin {
   // On macOS Option-j arrives as `∆` with code "KeyJ", and some vim builds
   // strip the Alt modifier rather than restoring it from the code, leaving a
   // bare `j`. Catch Alt-j/Alt-k before any editor handler sees them and give
-  // vim <A-j>/<A-k> directly, which keeps counts and `.` working.
+  // vim <A-j>/<A-k> directly, which keeps counts and `.` working. A typed
+  // letter wins over the code, so on Colemak or Dvorak the key in QWERTY's
+  // J position (Alt-n, Alt-h) is left alone.
   handleAltMove(e) {
     if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-    const letter = ALT_CODES[e.code] || (/^[jk]$/.test(e.key) ? e.key : null);
+    const key = e.key.toLowerCase();
+    const letter = /^[a-z]$/.test(key) ? (/^[jk]$/.test(key) ? key : null) : ALT_CODES[e.code];
     const Vim = this.patchedVim;
     if (!letter || !Vim) return;
     const view = activeEditorView(this.app);

@@ -648,9 +648,12 @@ test("M-j re-closes folds that run over trailing blank lines", async () => {
 const OPTION_KEYS = { h: "˙", j: "∆", k: "˚", l: "¬" };
 
 function optionKey(view, letter) {
+  return altKeydown(view, OPTION_KEYS[letter], `Key${letter.toUpperCase()}`);
+}
+
+function altKeydown(view, key, code) {
   const event = new window.KeyboardEvent("keydown", {
-    key: OPTION_KEYS[letter], code: `Key${letter.toUpperCase()}`,
-    altKey: true, bubbles: true, cancelable: true,
+    key, code, altKey: true, bubbles: true, cancelable: true,
   });
   let reached = false;
   const spy = () => { reached = true; };
@@ -677,6 +680,25 @@ test("an Option-j keydown moves the subtree, with a count", async () => {
   assert.equal(text(v), "## B\n## C\n## A\n## D");
   await keys(v, ".");
   assert.equal(text(v), "## B\n## A\n## C\n## D");
+});
+
+// On Colemak, Alt-n sits where QWERTY's J is: the code is "KeyJ", the key "n".
+test("an Alt-n keydown on Colemak is left alone", async () => {
+  const v = open("## A\n## B");
+  const event = altKeydown(v, "n", "KeyJ");
+  await tick();
+  assert.ok(!event.defaultPrevented);
+  assert.ok(event.reachedEditor);
+  assert.equal(text(v), "## A\n## B");
+});
+
+// On Colemak, j sits where QWERTY's Y is: the key decides, not the code.
+test("an Alt-j keydown moves the subtree whatever its code", async () => {
+  const v = open("## A\n## B");
+  const event = altKeydown(v, "j", "KeyY");
+  await tick();
+  assert.ok(event.defaultPrevented);
+  assert.equal(text(v), "## B\n## A");
 });
 
 test("an Option-j keydown in insert mode is left alone", async () => {

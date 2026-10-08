@@ -20,12 +20,12 @@ dom.window.document.createRange = () => {
   return r;
 };
 
-const { EditorState } = require("@codemirror/state");
+const { EditorState, EditorSelection } = require("@codemirror/state");
 const { EditorView, runScopeHandlers } = require("@codemirror/view");
 const { foldable, foldedRanges, foldEffect, codeFolding } = require("@codemirror/language");
 const { markdown } = require("@codemirror/lang-markdown");
 const { history, undo } = require("@codemirror/commands");
-const { vim, Vim, getCM } = require("@replit/codemirror-vim");
+const { vim, Vim, getCM, CodeMirror } = require("@replit/codemirror-vim");
 
 let activeView = null;
 class Plugin {
@@ -48,7 +48,9 @@ Module._load = function (request, ...rest) {
   if (request === "obsidian") return { Plugin, MarkdownView };
   return origLoad.call(this, request, ...rest);
 };
-window.CodeMirrorAdapter = { Vim };
+// Obsidian's adapter is the class itself, with the engine on it.
+CodeMirror.Vim = Vim;
+window.CodeMirrorAdapter = CodeMirror;
 Vim.suppressErrorLogging = true;
 
 const PluginClass = require(path.join(__dirname, "..", "main.js"));
@@ -1892,6 +1894,47 @@ test("a command that throws logs the error instead", () => {
   assert.equal(logged[0][0], "Evil Org:");
 });
 
+// jsdom has no layout, so stand in for moveVertically: the next or previous
+// visible line at the same column, except that down from a closed heading it
+// comes back short, as Obsidian's can: at the fold's end, still on the
+// heading's screen line, or with short "hidden", on the hidden line below it.
+function stubMoveVertically(view, short = "end") {
+  view.moveVertically = (range, forward) => {
+    const { state } = view;
+    const doc = state.doc;
+    const folds = [];
+    for (const it = foldedRanges(state).iter(); it.value; it.next()) folds.push({ from: it.from, to: it.to });
+    const line = doc.lineAt(range.head);
+    const covering = folds.find((f) => f.from >= line.from && f.from <= line.to);
+    if (forward && covering && range.head < covering.from) {
+      return EditorSelection.cursor(short === "end" ? covering.to : doc.line(line.number + 1).from, 1);
+    }
+    let n = line.number;
+    do n += forward ? 1 : -1;
+    while (n >= 1 && n <= doc.lines && folds.some((f) => f.from < doc.line(n).from && f.to >= doc.line(n).from));
+    if (n < 1 || n > doc.lines) return EditorSelection.cursor(forward ? doc.length : 0, 1);
+    const target = doc.line(n);
+    return EditorSelection.cursor(Math.min(target.from + range.head - line.from, target.to), 1);
+  };
+}
+
+for (const short of ["end", "hidden"]) test(`j over a closed heading goes to the next visible line in one step (${short})`, async () => {
+  const v = open(DOC);
+  stubMoveVertically(v, short);
+  fold(v, 3);
+  gotoLine(v, 3);
+  await keys(v, "j");
+  assert.equal(v.state.doc.lineAt(v.state.selection.main.head).number, 7);
+  assert.deepEqual(foldedLines(v), [3]);
+  gotoLine(v, 1);
+  await keys(v, "3j");
+  assert.equal(v.state.doc.lineAt(v.state.selection.main.head).number, 7);
+  assert.deepEqual(foldedLines(v), [3]);
+  await keys(v, "k");
+  assert.equal(v.state.doc.lineAt(v.state.selection.main.head).number, 3);
+  assert.deepEqual(foldedLines(v), [3]);
+});
+
 // Mobile has no Vim mode: window.CodeMirrorAdapter is missing and editors carry
 // no vim extension. The plugin still loads, quietly, and its commands still run.
 test("without a Vim engine the plugin loads quietly and commands still work", () => {
@@ -1942,7 +1985,9 @@ test("unload restores every Vim engine the plugin patched", async () => {
   plugin.installVimOverrides();
   assert.equal(plugin.patchedVim, Vim);
   const installed = calls.length;
+  assert.ok(CodeMirror.prototype.findPosV.stock);
   plugin.onunload();
+  assert.ok(!CodeMirror.prototype.findPosV.stock);
   assert.deepEqual(calls.slice(installed).sort(), [
     "action orgMoveSubtree", "action orgOpenLine", "motion expandToLine", "motion orgElement", "motion orgPasteAfter", "motion orgPasteBefore",
     "motion orgSubtree", "operator orgDelete", "operator orgIndent",

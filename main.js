@@ -468,6 +468,42 @@ function foldAwareExpandToLine(cm, head, args) {
   return new head.constructor(line - 1, Infinity);
 }
 
+// `j`, `gj` and `+` find the line below with the adapter's findPosV, which
+// asks CodeMirror's moveVertically. On a closed heading fold that can come
+// back short of the line after the fold: at the fold's end, still on the
+// heading's screen line, when it looks just below the heading's text and
+// finds it still inside the folded line. Vim then puts the cursor at the
+// fold's end, or on the hidden line below the heading, and either shows at
+// the end of the heading. Whenever the answer doesn't get past a closed fold
+// on the cursor's line, go to the first line after the fold, keeping the
+// column. (`gj` on a folded heading that wraps skips its other rows too.)
+function foldAwareFindPosV(stock) {
+  const patched = function (start, amount, unit, goalColumn) {
+    const view = this.cm6;
+    const folds = view && unit === "line" && amount > 0 ? allFolds(view.state) : [];
+    if (folds.length === 0) return stock.call(this, start, amount, unit, goalColumn);
+    const doc = view.state.doc;
+    const Pos = start.constructor;
+    let pos = start;
+    for (let i = Math.round(amount); i > 0; i--) {
+      const from = this.indexFromPos(pos);
+      const end = foldedLineEnd(doc, folds, from);
+      const goal = goalColumn ?? this.charCoords(pos, "div").left;
+      let next = stock.call(this, pos, 1, unit, goal);
+      if (end > doc.lineAt(from).to && end < doc.length && this.indexFromPos(next) <= end) {
+        const line = doc.lineAt(end).number; // 1-based, so the next line's 0-based number
+        const top = this.charCoords(new Pos(line, 0), "div").top;
+        const hit = this.coordsChar({ left: goal, top: top + 1 }, "div");
+        next = hit.line === line ? hit : new Pos(line, 0);
+      }
+      pos = next;
+    }
+    return pos;
+  };
+  patched.stock = stock;
+  return patched;
+}
+
 const firstNonBlank = (text) => text.length - text.trimStart().length;
 
 const posBefore = (a, b) => a.line < b.line || (a.line === b.line && a.ch < b.ch);
@@ -1306,6 +1342,15 @@ module.exports = class EvilOrgPlugin extends Plugin {
     const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
     if (!Vim || Vim === this.patchedVim) return;
     Vim.defineMotion("expandToLine", foldAwareExpandToLine);
+    // Obsidian's window.CodeMirrorAdapter is the adapter class, shared by
+    // every Vim engine, so it is patched once.
+    const adapter = window.CodeMirrorAdapter.prototype;
+    if (adapter && typeof adapter.findPosV === "function" && !adapter.findPosV.stock) {
+      adapter.findPosV = foldAwareFindPosV(adapter.findPosV);
+      (this.vimRestorers ||= []).push(() => {
+        adapter.findPosV = adapter.findPosV.stock || adapter.findPosV;
+      });
+    }
     // A command's motion runs before its action; these entries shadow the
     // stock `p`/`P` in normal mode (visual-mode paste is untouched).
     Vim.defineMotion("orgPasteAfter", pasteMotion(Vim, true));

@@ -14,8 +14,8 @@ The keys in the table that follows operate only in Vim normal mode and Vim visua
 
 | Key | Function |
 | --- | --- |
-| `Tab` | Changes the fold state of the heading at the cursor in this sequence: folded → children → subtree (`TAB` in org-mode). On a folded block that is not a heading, it opens or closes that fold. |
-| `Shift-Tab` | Changes the fold state of all of the note in this sequence: overview → contents → show all (`S-TAB` in org-mode). |
+| `Tab` | Changes the fold state of the heading at the cursor, as `TAB` (`org-cycle`) does in org-mode. On a folded heading, it shows the text of the heading and its subheadings, folded (children). If the heading has no subheadings, it shows all of the subtree. When you push `Tab` again immediately after children, it shows all of the subtree (subtree). At all other times, it folds the subtree (folded). Thus, the sequence is folded → children → subtree → folded. Folded list items and code blocks in the subtree stay folded. On a block that is not a heading, it opens or closes the fold of that block. |
+| `Shift-Tab` | Changes the fold state of all of the note, as `S-TAB` (`org-global-cycle`) does in org-mode. It shows the overview: the first heading, and the headings after it that are not deeper, with all of their text folded. When you push `Shift-Tab` again immediately after the overview, it shows the contents: all headings, with only the text of each heading folded. When you push it again immediately after the contents, it shows all of the note. At all other times, it shows the overview. Thus, the sequence is overview → contents → show all → overview. Text before the first heading does not change. If the cursor is in text that becomes folded, the cursor goes to the visible line above it. |
 | `V` | When you select a folded heading, the selection includes all of its subtree. |
 | `dd`, `yy`, `cc`, `3dd`, … | The plugin counts a folded heading as one line. Thus, these commands operate on all of the subtree. |
 | `u` | When you undo a delete, the plugin restores the folded headings in their folded state. |

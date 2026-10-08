@@ -130,46 +130,103 @@ function scanDoc(doc) {
   return { levels: Object.freeze(levels), code: Object.freeze(code), blocks: Object.freeze(blocks.map(Object.freeze)) };
 }
 
-function collectHeadings(state) {
+// Line n is hidden: a closed fold covers its start.
+function lineHidden(doc, folds, n) {
+  const pos = doc.line(n).from;
+  return folds.some((f) => f.from < pos && f.to >= pos);
+}
+
+// The headings org shows in an outline view of lines first..last: a heading
+// is shown when it is no deeper than every heading before it, or than floor.
+// Floor 0 gives org-overview (the first heading's level, then any shallower
+// one), the parent's level + 1 gives org-show-children (the direct children,
+// all of them even where the first child is deeper), and MAX_LEVEL gives
+// org-content (every heading).
+function outlineHeadings(doc, first, last, floor) {
+  const levels = headingLevels(doc);
   const out = [];
-  const levels = headingLevels(state.doc);
-  // The shallowest level present is top: a note may start at ## when its file
-  // name serves as the title.
-  const top = levels.reduce((min, l) => (l && l < min ? l : min), Infinity);
-  for (let i = 1; i <= state.doc.lines; i++) {
-    if (!levels[i]) continue;
-    const line = state.doc.line(i);
-    const range = foldable(state, line.from, line.to);
-    if (range) out.push({ top: levels[i] === top, range });
+  let min = Infinity;
+  for (let n = first; n <= last; n++) {
+    const level = levels[n];
+    if (!level) continue;
+    if (level <= Math.max(min, floor)) out.push(n);
+    min = Math.min(min, level);
   }
   return out;
 }
 
-function directChildFolds(state, line, own) {
-  const levels = headingLevels(state.doc);
-  const level = levels[line.number];
+// Folds that hide the text after each shown heading up to the next shown
+// heading, or through line last. Blank lines before the next heading stay
+// visible, as with the editor's own heading folds, which are used where the
+// hidden text is a whole section.
+function outlineFolds(state, shown, last) {
+  const doc = state.doc;
   const out = [];
-  for (let i = line.number + 1; i <= state.doc.lines; i++) {
-    const l = state.doc.line(i);
-    if (l.from >= own.to) break;
-    const lv = levels[i];
-    if (!lv) continue;
-    if (lv <= level) break;
-    if (lv === level + 1) {
-      const r = foldable(state, l.from, l.to);
-      if (r) out.push(r);
+  shown.forEach((n, i) => {
+    const next = i + 1 < shown.length ? shown[i + 1] : last + 1;
+    const line = doc.line(n);
+    const section = foldable(state, line.from, line.to);
+    if (section && doc.lineAt(section.to).number < next) {
+      out.push(section);
+      return;
     }
-  }
+    let end = next - 1;
+    while (end > n && isBlank(doc.line(end).text)) end--;
+    if (end > n) out.push({ from: line.to, to: doc.line(end).to });
+  });
   return out;
 }
 
+// Make ranges the heading folds of lines first..last. Other folds there, of
+// list items and code blocks, stay as they are, as org's outline cycling
+// leaves blocks alone.
+function setOutlineFolds(view, first, last, ranges) {
+  const doc = view.state.doc;
+  const levels = headingLevels(doc);
+  const from = doc.line(first).from;
+  const to = doc.line(last).to;
+  const old = allFolds(view.state).filter((f) => {
+    const line = doc.lineAt(f.from);
+    return f.from >= from && f.from <= to && levels[line.number] && f.from === line.to;
+  });
+  const effects = old.filter((f) => !isFolded(ranges, f)).map((f) => unfoldEffect.of(f))
+    .concat(ranges.filter((r) => !isFolded(old, r)).map((r) => foldEffect.of(r)));
+  if (effects.length > 0) view.dispatch({ effects });
+}
+
+// org-cycle and org-global-cycle go on to their next state only when the
+// previous command was the same cycle (Emacs' last-command), and otherwise
+// start over. A change to the text, the cursor or the folds in between
+// counts as another command.
+const lastCycles = new WeakMap();
+
+function lastCycle(view, kind) {
+  const last = lastCycles.get(view);
+  lastCycles.delete(view);
+  const state = view.state;
+  const same = last && last.kind === kind && last.doc === state.doc
+    && last.selection === state.selection && last.folded === foldedRanges(state);
+  return same ? last.status : null;
+}
+
+function rememberCycle(view, kind, status) {
+  const state = view.state;
+  lastCycles.set(view, { kind, status, doc: state.doc, selection: state.selection, folded: foldedRanges(state) });
+}
+
+// org-cycle on a heading. A folded subtree shows its children, folded
+// (CHILDREN), or, with no subheadings, all of it (SUBTREE). Right after
+// CHILDREN, the next Tab shows all of the subtree (SUBTREE). Any other time,
+// Tab folds the subtree (FOLDED).
 function localCycle(view) {
   const state = view.state;
+  const doc = state.doc;
   const head = state.selection.main.head;
-  const line = state.doc.lineAt(head);
+  const line = doc.lineAt(head);
   const folds = allFolds(state);
-  const level = headingLevels(state.doc)[line.number];
+  const level = headingLevels(doc)[line.number];
   const own = foldable(state, line.from, line.to);
+  const last = lastCycle(view, "local");
 
   if (level === 0) {
     if (own) {
@@ -191,48 +248,54 @@ function localCycle(view) {
     view.dispatch({ effects: [unfoldEffect.of(covering)] });
     return true;
   }
+  // Nothing under the heading: org's EMPTY ENTRY.
   if (!own) return true;
 
-  if (isFolded(folds, own)) {
-    const effects = [unfoldEffect.of(own)];
-    for (const c of directChildFolds(state, line, own)) {
-      if (!isFolded(folds, c)) effects.push(foldEffect.of(c));
-    }
-    view.dispatch({ effects });
-    return true;
+  const first = line.number + 1;
+  const end = doc.lineAt(own.to).number;
+  let hidden = true;
+  for (let n = first; n <= end && hidden; n++) {
+    hidden = isBlank(doc.line(n).text) || lineHidden(doc, folds, n);
   }
-  const inRange = folds.filter((f) => f.from >= own.from && f.to <= own.to);
-  if (inRange.length > 0) {
-    view.dispatch({ effects: inRange.map((f) => unfoldEffect.of(f)) });
-    return true;
+  const children = outlineHeadings(doc, first, end, level + 1);
+  let status;
+  if (hidden && children.length > 0) {
+    setOutlineFolds(view, line.number, end, outlineFolds(state, children, end));
+    status = "children";
+  } else if (hidden || last === "children") {
+    setOutlineFolds(view, line.number, end, []);
+    status = "subtree";
+  } else {
+    setOutlineFolds(view, line.number, end, [own]);
+    status = "folded";
   }
-  view.dispatch({ effects: [foldEffect.of(own)] });
+  rememberCycle(view, "local", status);
   return true;
 }
 
-// Overview (only the top-level headings folded) goes to contents (only the
-// headings below them folded), and contents to show all. Any other state,
-// such as show all or a section folded by hand, goes to overview. A note with
-// nothing below top level has no contents step.
+// org-global-cycle. Shift-Tab shows the overview: the first heading and the
+// headings after it that are no deeper, each with all under it folded. Right
+// after the overview, the next one shows the contents: every heading, with
+// only its own text folded. Right after the contents, the next one shows all.
+// Text before the first heading stays as it is.
 function globalCycle(view) {
   const state = view.state;
-  const headings = collectHeadings(state);
-  const folds = allFolds(state);
-  const top = headings.filter((h) => h.top);
-  const inner = headings.filter((h) => !h.top);
-  const folded = (h) => isFolded(folds, h.range);
-  const overview = top.length > 0 && top.every(folded) && !inner.some(folded);
-  const contents = inner.length > 0 && inner.every(folded) && !top.some(folded);
-  let effects;
-  if (overview && inner.length > 0) {
-    effects = top.map((h) => unfoldEffect.of(h.range)).concat(inner.map((h) => foldEffect.of(h.range)));
-  } else if (overview || contents) {
-    effects = folds.map((f) => unfoldEffect.of(f));
-  } else {
-    effects = inner.filter(folded).map((h) => unfoldEffect.of(h.range))
-      .concat(top.filter((h) => !folded(h)).map((h) => foldEffect.of(h.range)));
+  const doc = state.doc;
+  const last = lastCycle(view, "global");
+  const status = last === "overview" ? "contents" : last === "contents" ? "all" : "overview";
+  const first = headingLevels(doc).findIndex((l) => l > 0);
+  if (status === "all") {
+    const folds = allFolds(state);
+    if (folds.length > 0) view.dispatch({ effects: folds.map((f) => unfoldEffect.of(f)) });
+  } else if (first > 0) {
+    const floor = status === "contents" ? MAX_LEVEL : 0;
+    setOutlineFolds(view, first, doc.lines, outlineFolds(state, outlineHeadings(doc, first, doc.lines, floor), doc.lines));
+    // Like Emacs, put the cursor on the visible line whose fold hides it.
+    const head = view.state.selection.main.head;
+    const visible = foldedLineStart(doc, allFolds(view.state), head);
+    if (visible !== head) view.dispatch({ selection: { anchor: visible } });
   }
-  if (effects.length > 0) view.dispatch({ effects });
+  rememberCycle(view, "global", status);
   return true;
 }
 

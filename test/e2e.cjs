@@ -109,6 +109,20 @@ function foldedLines(view) {
 
 const text = (view) => view.state.doc.toString();
 
+// 1-based numbers of the lines no closed fold hides.
+function visibleLines(view) {
+  const doc = view.state.doc;
+  const folds = [];
+  const it = foldedRanges(view.state).iter();
+  for (; it.value; it.next()) folds.push({ from: it.from, to: it.to });
+  const out = [];
+  for (let n = 1; n <= doc.lines; n++) {
+    const pos = doc.line(n).from;
+    if (!folds.some((f) => f.from < pos && f.to >= pos)) out.push(n);
+  }
+  return out;
+}
+
 const DOC = [
   "# A",      // 1
   "a",        // 2
@@ -125,15 +139,22 @@ const test = (name, fn) => tests.push({ name, fn });
 
 // --- existing behaviour -----------------------------------------------------
 
-test("Tab cycles folded -> children -> subtree", async () => {
+// org-cycle (Tab) and org-global-cycle (S-Tab), as in
+// https://orgmode.org/manual/Global-and-local-cycling.html. A cycle goes on to
+// its next state only when it is pressed again right away; anything else in
+// between starts it over.
+
+test("Tab cycles folded -> children -> subtree -> folded", async () => {
   const v = open(DOC);
   gotoLine(v, 3);
   await keys(v, "<Tab>");
-  assert.deepEqual(foldedLines(v), [3]);
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 7, 8]);
   await keys(v, "<Tab>");
-  assert.deepEqual(foldedLines(v), [5]);
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 4, 5, 7, 8]);
   await keys(v, "<Tab>");
-  assert.deepEqual(foldedLines(v), []);
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 4, 5, 6, 7, 8]);
+  await keys(v, "<Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 7, 8]);
 });
 
 test("Tab after a pending operator is left to vim", async () => {
@@ -143,56 +164,123 @@ test("Tab after a pending operator is left to vim", async () => {
   assert.deepEqual(foldedLines(v), []);
 });
 
-test("S-Tab cycles overview -> contents -> show all", async () => {
+test("Tab on an open heading with a folded subheading folds it", async () => {
   const v = open(DOC);
-  await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), [1]);
-  await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), [3, 5, 7]);
-  await keys(v, "<S-Tab>");
+  fold(v, 5);
+  gotoLine(v, 3);
+  await keys(v, "<Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 7, 8]);
+});
+
+test("Tab in children view after another command folds the subtree", async () => {
+  const v = open(DOC);
+  gotoLine(v, 3);
+  await keys(v, "<Tab><Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 4, 5, 7, 8]);
+  gotoLine(v, 4);
+  gotoLine(v, 3);
+  await keys(v, "<Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 7, 8]);
+});
+
+test("Tab on a heading without subheadings cycles folded -> subtree", async () => {
+  const v = open(DOC);
+  gotoLine(v, 7);
+  await keys(v, "<Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 4, 5, 6, 7]);
+  await keys(v, "<Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 4, 5, 6, 7, 8]);
+  await keys(v, "<Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 4, 5, 6, 7]);
+});
+
+test("Tab in children view shows every direct child, also past a deeper first one", async () => {
+  const v = open("# A\na\n### X\nx\n## Y\ny\n### Z\nz");
+  await keys(v, "<Tab><Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 5]);
+  await keys(v, "<Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 4, 5, 6, 7, 8]);
+});
+
+test("Tab on an empty heading does nothing", async () => {
+  const v = open("# A\n# B\nb");
+  await keys(v, "<Tab>");
   assert.deepEqual(foldedLines(v), []);
 });
 
-test("S-Tab after folding a subsection by hand goes to overview", async () => {
-  const v = open(DOC);
-  gotoLine(v, 3);
+test("Tab leaves folded list items in the subtree folded", async () => {
+  const v = open("# A\n- x\n  - y\n# B\nb");
+  fold(v, 2);
   await keys(v, "<Tab>");
-  assert.deepEqual(foldedLines(v), [3]);
-  await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), [1]);
-  await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), [3, 5, 7]);
+  assert.deepEqual(visibleLines(v), [1, 4, 5]);
+  await keys(v, "<Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 4, 5]);
 });
 
-test("S-Tab with some top-level headings folded folds them all", async () => {
+test("S-Tab cycles overview -> contents -> show all -> overview", async () => {
+  const v = open(DOC);
+  await keys(v, "<S-Tab>");
+  assert.deepEqual(visibleLines(v), [1]);
+  await keys(v, "<S-Tab>");
+  assert.deepEqual(visibleLines(v), [1, 3, 5, 7]);
+  await keys(v, "<S-Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 4, 5, 6, 7, 8]);
+  await keys(v, "<S-Tab>");
+  assert.deepEqual(visibleLines(v), [1]);
+});
+
+test("S-Tab after another command goes to overview", async () => {
+  const v = open(DOC);
+  await keys(v, "<S-Tab>");
+  await keys(v, "<Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 7]);
+  await keys(v, "<S-Tab>");
+  assert.deepEqual(visibleLines(v), [1]);
+  await keys(v, "<S-Tab>");
+  assert.deepEqual(visibleLines(v), [1, 3, 5, 7]);
+});
+
+test("S-Tab with some headings folded by hand goes to overview", async () => {
   const v = open("# A\na\n\n# B\nb");
   gotoLine(v, 4);
   await keys(v, "<Tab>");
   assert.deepEqual(foldedLines(v), [4]);
   await keys(v, "<S-Tab>");
   assert.deepEqual(foldedLines(v), [1, 4]);
-  await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), []);
 });
 
-test("S-Tab treats the shallowest heading level as top", async () => {
-  const v = open("## A\na\n### A1\nx\n## B\nb");
+test("S-Tab overview shows the first heading's level and shallower ones after it", async () => {
+  const v = open("## A\na\n# B\nb\n## C\nc");
   await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), [1, 5]);
+  assert.deepEqual(visibleLines(v), [1, 3]);
   await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), [3]);
+  assert.deepEqual(visibleLines(v), [1, 3, 5]);
   await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), []);
-  await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), [1, 5]);
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 4, 5, 6]);
 });
 
-test("S-Tab on headings all at one level cycles overview -> show all", async () => {
-  const v = open("# A\na\n# B\nb\n# C\nc");
+test("S-Tab on headings all at one level still has three states", async () => {
+  const v = open("# A\na\n# B\nb");
   await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), [1, 3, 5]);
+  assert.deepEqual(visibleLines(v), [1, 3]);
   await keys(v, "<S-Tab>");
-  assert.deepEqual(foldedLines(v), []);
+  assert.deepEqual(visibleLines(v), [1, 3]);
+  await keys(v, "<S-Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 4]);
+});
+
+test("S-Tab leaves text before the first heading visible", async () => {
+  const v = open("intro\n# A\na\n# B\nb");
+  await keys(v, "<S-Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 4]);
+});
+
+test("S-Tab moves the cursor out of the text it folds", async () => {
+  const v = open(DOC);
+  gotoLine(v, 6);
+  await keys(v, "<S-Tab>");
+  assert.equal(v.state.selection.main.head, 0);
+  assert.deepEqual(visibleLines(v), [1]);
 });
 
 test("dd on a folded heading deletes the subtree", async () => {

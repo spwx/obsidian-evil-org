@@ -77,7 +77,7 @@ Obsidian does not have a public API for its Vim mode. For this reason, the plugi
 - It changes the `expandToLine` motion so that the motion includes folded lines.
 - It wraps the `findPosV` method of `window.CodeMirrorAdapter` so that `j` moves past a closed fold in one step. Without this change, the first `j` on a folded heading puts the cursor at the end of the heading.
 - It maps `o`, `O`, `p`, `P`, `d`, `>`, `<`, `<A-j>`, `<A-k>`, `ar`, `ir`, `ae`, and `ie`. In visual mode, it also maps `x`, `X`, and `D`.
-- It gets `Alt-j` and `Alt-k` in Vim normal mode, before the editor and Obsidian's hotkeys get them. Thus, in Vim normal mode, an Obsidian hotkey that you set to `Alt-j` or `Alt-k` does not operate. The plugin gets the keys by the letter that you type. If the key does not give a letter, the plugin uses the key code. On macOS, the Vim mode of Obsidian can lose the Alt modifier. For example, `Option-j` gives `∆`.
+- It gets `Alt-j` and `Alt-k` in Vim normal mode, in the main window and in pop-out windows, before the editor and Obsidian's hotkeys get them. Thus, in Vim normal mode, an Obsidian hotkey that you set to `Alt-j` or `Alt-k` does not operate. The plugin gets the keys by the letter that you type. If the key does not give a letter, the plugin uses the key code. On macOS, the Vim mode of Obsidian can lose the Alt modifier. For example, `Option-j` gives `∆`.
 - It adds a `Tab` and `Shift-Tab` key binding to the editor. The binding operates only in Vim normal mode.
 - It gets the CodeMirror 6 view from `editor.cm`.
 
@@ -97,15 +97,15 @@ npm test
 To make a release, run the release script with the new version number. Do not put a `v` before the number.
 
 ```sh
-npm run release -- 1.1.3          # change the version, test, commit, and tag
+npm run release -- 1.1.3          # test, change the version, commit, and tag
 npm run release -- 1.1.3 --push   # do the same steps, then push main and the tag
 ```
 
 The script does these steps:
 
-1. It changes `version` in `manifest.json` to the new version.
-2. It adds the new version to `versions.json`, with the `minAppVersion` value from `manifest.json`. This value tells older Obsidian installations which build they can use.
-3. It runs the build and the tests.
+1. It runs the build and the tests. If they fail, the script stops before it changes a file.
+2. It changes `version` in `manifest.json` to the new version.
+3. It adds the new version to `versions.json`, with the `minAppVersion` value from `manifest.json`. This value tells older Obsidian installations which build they can use.
 4. It makes a commit and a tag.
 
 The commit message opens in `$EDITOR`. The first line is `Bump to <version>`. Add a body that describes the changes. To keep only the first line, add `--no-edit`.

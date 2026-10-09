@@ -1,8 +1,8 @@
-// Cut a release: bump manifest.json, record the build in versions.json, run
-// the tests, then commit and tag. manifest.json stays the source of truth for
-// the version; package.json is private and deliberately has none.
+// Cut a release: run the tests, bump manifest.json, record the build in
+// versions.json, then commit and tag. manifest.json stays the source of truth
+// for the version; package.json is private and deliberately has none.
 //
-//   npm run release -- 1.1.3          edit the two files, test, commit, tag
+//   npm run release -- 1.1.3          test, edit the two files, commit, tag
 //   npm run release -- 1.1.3 --push   ...and push main and the tag
 //
 // The commit message opens in $EDITOR prefilled with "Bump to <version>", so
@@ -58,6 +58,12 @@ const rank = (v) =>
 if (rank(version) <= rank(manifest.version))
   die(`${version} is not newer than manifest.json's ${manifest.version}`);
 
+// Same two commands the Release workflow runs, so a red build fails here first.
+// They run before the two files change, so a failure leaves the tree clean for
+// another try.
+run("npm", "run", "build");
+run("npm", "test");
+
 manifest.version = version;
 // versions.json tells older Obsidian installs which build still runs for them,
 // so every released version needs an entry — the release workflow checks it.
@@ -65,10 +71,6 @@ versions[version] = manifest.minAppVersion;
 
 writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 writeFileSync(versionsPath, `${JSON.stringify(versions, null, 2)}\n`);
-
-// Same two commands the Release workflow runs, so a red build fails here first.
-run("npm", "run", "build");
-run("npm", "test");
 
 git("add", "manifest.json", "versions.json");
 run("git", "commit", ...(edit ? ["-e"] : []), "-m", `Bump to ${version}`);

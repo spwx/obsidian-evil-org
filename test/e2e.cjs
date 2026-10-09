@@ -1971,6 +1971,34 @@ test("without a Vim engine the plugin loads quietly and commands still work", ()
   mobile.onunload();
 });
 
+test("a Vim engine whose API throws is logged, patched once, and restored on unload", () => {
+  // A stand-in for an engine whose defineOperator a later vim has changed.
+  const calls = [];
+  const record = (kind) => (name) => calls.push(`${kind} ${name}`);
+  const broken = { defineMotion: record("motion"), defineAction: record("action"), mapCommand: record("map"),
+    defineOperator: () => { throw new Error("no defineOperator"); } };
+  const logged = [];
+  const error = console.error;
+  const engine = window.CodeMirrorAdapter.Vim;
+  window.CodeMirrorAdapter.Vim = broken;
+  console.error = (...args) => logged.push(args);
+  const other = new PluginClass(app);
+  try {
+    other.installVimOverrides();
+    other.installVimOverrides();
+    assert.equal(logged.length, 1);
+    assert.equal(other.patchedVim, broken);
+    assert.equal(other.vimRestorers.length, 1);
+    assert.ok(calls.includes("motion expandToLine"));
+    const installed = calls.length;
+    other.onunload();
+    assert.equal(calls[installed], "motion expandToLine");
+  } finally {
+    console.error = error;
+    window.CodeMirrorAdapter.Vim = engine;
+  }
+});
+
 // Must run last: these unload the plugin.
 test("unload restores every Vim engine the plugin patched", async () => {
   // A stand-in for an engine that another plugin swaps in and out again.

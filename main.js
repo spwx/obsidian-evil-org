@@ -84,9 +84,9 @@ const isBlank = (text) => text.trim() === "";
 // in a list item. As in Obsidian, a `---` on line 1 starts front matter only
 // when a closing line follows; an unclosed fence runs to the end of the note.
 // `blocks` lists those blocks as their first and last lines, and whether a
-// closing line ends them. A Text
-// never changes, so the scan is cached per doc: callers ask again freely
-// instead of passing it around. The arrays are shared, hence frozen.
+// closing line ends them. A Text never changes, so the scan is cached per doc:
+// callers ask again freely instead of passing it around. The arrays are
+// shared, hence frozen.
 const scanCache = new WeakMap();
 
 function scanLines(doc) {
@@ -1266,14 +1266,13 @@ function openLineChange(doc, target, after, text, above = 0, below = 0) {
 }
 
 // `o`/`O` (evil-org-open-below/above). In a list item, open a new item after
-// the item and its sub-items, or before the item: same indent and bullet, the next number
-// (numbering the items after it in sequence from it), and an empty checkbox if
-// the item has one.
-// On a heading, or in a code block or front matter even inside an item, open
-// a plain line, as in vim. On a closed fold `o` opens a
-// line below the whole fold, not inside it. Elsewhere `o`/`O` are the stock
-// ones. Vim calls actions as methods of its action table, so `this` holds the
-// stock actions.
+// the item and its sub-items, or before the item: same indent and bullet, the
+// next number (numbering the items after it in sequence from it), and an empty
+// checkbox if the item has one. On a heading, or in a code block or front
+// matter even inside an item, open a plain line, as in vim. On a closed fold
+// `o` opens a line below the whole fold, not inside it. Elsewhere `o`/`O` are
+// the stock ones. Vim calls actions as methods of its action table, so `this`
+// holds the stock actions.
 function openLine(cm, args, vim) {
   const view = cm.cm6;
   if (!view) return this.newLineAndEnterInsertMode(cm, args, vim);
@@ -1341,6 +1340,33 @@ module.exports = class EvilOrgPlugin extends Plugin {
   installVimOverrides() {
     const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
     if (!Vim || Vim === this.patchedVim) return;
+    // Every engine patched keeps the overrides until unload, not just the
+    // current one. The engine counts as patched and its restorer is queued
+    // before any override, so if one throws (say, after an update changes
+    // vim's API) those already made are still undone on unload, and the next
+    // leaf change doesn't try again. Undoing an override never made is
+    // harmless.
+    this.patchedVim = Vim;
+    (this.vimRestorers ||= []).push(guarded(() => {
+      Vim.defineMotion("expandToLine", stockExpandToLine);
+      Vim.defineAction("orgMoveSubtree", () => {});
+      Vim.defineMotion("orgSubtree", () => null);
+      Vim.defineMotion("orgElement", () => null);
+      Vim.defineAction("orgOpenLine", function (cm, args, vim) {
+        return this.newLineAndEnterInsertMode(cm, args, vim);
+      });
+      // Keymap entries can't be removed, so make them behave like the stock ones.
+      Vim.defineMotion("orgPasteAfter", (_cm, head) => head);
+      Vim.defineMotion("orgPasteBefore", (_cm, head) => head);
+      Vim.defineOperator("orgIndent", stockIndent);
+      Vim.defineOperator("orgDelete", stockDelete(Vim));
+    }));
+    // Alt-j/Alt-k go to vim only once its <A-j>/<A-k> mappings are in place.
+    this.altMoveVim = guarded(() => this.overrideVim(Vim))() === false ? null : Vim;
+  }
+
+  // The overrides installVimOverrides makes on one Vim engine.
+  overrideVim(Vim) {
     Vim.defineMotion("expandToLine", foldAwareExpandToLine);
     // Obsidian's window.CodeMirrorAdapter is the adapter class, shared by
     // every Vim engine, so it is patched once.
@@ -1398,23 +1424,6 @@ module.exports = class EvilOrgPlugin extends Plugin {
       Vim.mapCommand(key, "action", "orgOpenLine", { after },
         { isEdit: true, interlaceInsertRepeat: true, context: "normal" });
     }
-    // Every engine patched keeps the overrides until unload, not just the
-    // current one.
-    this.patchedVim = Vim;
-    (this.vimRestorers ||= []).push(() => {
-      Vim.defineMotion("expandToLine", stockExpandToLine);
-      Vim.defineAction("orgMoveSubtree", () => {});
-      Vim.defineMotion("orgSubtree", () => null);
-      Vim.defineMotion("orgElement", () => null);
-      Vim.defineAction("orgOpenLine", function (cm, args, vim) {
-        return this.newLineAndEnterInsertMode(cm, args, vim);
-      });
-      // Keymap entries can't be removed, so make them behave like the stock ones.
-      Vim.defineMotion("orgPasteAfter", (_cm, head) => head);
-      Vim.defineMotion("orgPasteBefore", (_cm, head) => head);
-      Vim.defineOperator("orgIndent", stockIndent);
-      Vim.defineOperator("orgDelete", stockDelete(Vim));
-    });
   }
 
   // On macOS Option-j arrives as `∆` with code "KeyJ", and some vim builds
@@ -1425,9 +1434,9 @@ module.exports = class EvilOrgPlugin extends Plugin {
   // J position (Alt-n, Alt-h) is left alone.
   handleAltMove(e) {
     if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-    const key = e.key.toLowerCase();
+    const key = (e.key || "").toLowerCase();
     const letter = /^[a-z]$/.test(key) ? (/^[jk]$/.test(key) ? key : null) : ALT_CODES[e.code];
-    const Vim = this.patchedVim;
+    const Vim = this.altMoveVim;
     if (!letter || !Vim) return;
     const view = activeEditorView(this.app);
     if (!view || !view.dom.contains(e.target)) return;
@@ -1442,6 +1451,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
     for (const restore of (this.vimRestorers || []).reverse()) restore();
     this.vimRestorers = [];
     this.patchedVim = null;
+    this.altMoveVim = null;
   }
 
   async onload() {
@@ -1449,7 +1459,10 @@ module.exports = class EvilOrgPlugin extends Plugin {
     // plugin), so re-check whenever the active editor changes.
     this.app.workspace.onLayoutReady(() => this.installVimOverrides());
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.installVimOverrides()));
-    this.registerDomEvent(document, "keydown", (e) => this.handleAltMove(e), { capture: true });
+    const altMove = (doc) => this.registerDomEvent(doc, "keydown", (e) => this.handleAltMove(e), { capture: true });
+    altMove(document);
+    // A pop-out window has a document of its own.
+    this.registerEvent(this.app.workspace.on("window-open", (win) => altMove(win.doc)));
     // Tab cycles only in normal mode; elsewhere it's left to vim and the editor.
     const tab = (fn) => guarded((view) => normalMode(view) && fn(view));
     this.registerEditorExtension([

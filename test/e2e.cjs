@@ -1185,6 +1185,79 @@ test("var selects the subtree, ar again the parent", async () => {
   assert.equal(text(v), "# Z");
 });
 
+// On a table row ar/ir are the row and its inside, as in Vim Motions.
+const TABLE = "# T\n## S\n| a | b |\n| - | - |\n| c | d |\n\n## U";
+
+test("dar on a table row deletes the row's text, dir the text between its pipes", async () => {
+  let v = open(TABLE);
+  gotoLine(v, 5);
+  await keys(v, "dar");
+  assert.equal(text(v), "# T\n## S\n| a | b |\n| - | - |\n\n\n## U");
+  v = open(TABLE);
+  gotoLine(v, 5);
+  await keys(v, "dir");
+  assert.equal(text(v), "# T\n## S\n| a | b |\n| - | - |\n||\n\n## U");
+});
+
+test("yar on a table row yanks the row, vir selects between the pipes", async () => {
+  assert.equal(await yanked(TABLE, 3, "ar", 4), "| a | b |");
+  const v = open(TABLE);
+  gotoLine(v, 3);
+  await keys(v, "vir");
+  assert.equal(v.state.sliceDoc(v.state.selection.main.from, v.state.selection.main.to), " a | b ");
+  await keys(v, "d");
+  assert.equal(text(v), "# T\n## S\n||\n| - | - |\n| c | d |\n\n## U");
+});
+
+test("ir on a table row skips escaped pipes but not one after an escaped backslash", async () => {
+  assert.equal(await yanked("| a \\| b | c |", 1, "ir"), " a \\| b | c ");
+  assert.equal(await yanked("| a | b \\|", 1, "ir"), " a ");
+  assert.equal(await yanked("| a | b \\\\|", 1, "ir"), " a | b \\\\");
+  assert.equal(await yanked("# T\n||", 2, "ir"), "");
+});
+
+test("ar on a table row in a code block is the subtree", async () => {
+  const doc = "## S\n```\n| a | b |\n```\n## U";
+  const v = open(doc);
+  gotoLine(v, 3);
+  await keys(v, "dar");
+  assert.equal(text(v), "## U");
+});
+
+test("on a table row 2ar and ar again in visual mode are the subtree", async () => {
+  let v = open(TABLE);
+  gotoLine(v, 5);
+  await keys(v, "d2ar");
+  assert.equal(text(v), "# T\n## U");
+  v = open(TABLE);
+  gotoLine(v, 5);
+  await keys(v, "d3ar");
+  assert.equal(text(v), "");
+  v = open(TABLE);
+  gotoLine(v, 5);
+  await keys(v, "varard");
+  assert.equal(text(v), "# T\n## U");
+  v = open(TABLE);
+  gotoLine(v, 5);
+  await keys(v, "virird");
+  assert.equal(text(v), "# T\n## S\n\n## U");
+  v = open(TABLE);
+  gotoLine(v, 5);
+  await keys(v, "Vard");
+  assert.equal(text(v), "# T\n## U");
+});
+
+test("ar on a line under a heading that only contains a pipe is still the subtree", async () => {
+  const v = open("# T\n## S\na | b\n|\n## U");
+  gotoLine(v, 3);
+  await keys(v, "dar");
+  assert.equal(text(v), "# T\n## U");
+  const w = open("# T\n## S\n|\n## U");
+  gotoLine(w, 3);
+  await keys(w, "dar");
+  assert.equal(text(w), "# T\n## U");
+});
+
 // --- ae / ie -------------------------------------------------------------------
 
 const LIST = "# T\n- a\n  - a1\n  - a2\n    more\n- b\n\nafter";

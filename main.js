@@ -729,9 +729,32 @@ function enclosingHeadings(doc, n) {
 // under, heading included, plus trailing blank lines; `ir` is its body without
 // the heading or leading and trailing blank lines. A count, or repeating `ar`
 // in visual mode, takes in the enclosing subtrees.
+//
+// On a Markdown table row they are Vim Motions' table-row text objects
+// instead, since vim runs only one mapping per key: `ar` is the whole line,
+// `ir` the text between the first and last unescaped pipe, both charwise. The
+// row counts as the innermost level: a count of n, or `ar`/`ir` in visual
+// mode once the selection already covers the row, goes on to the subtrees as
+// a count of n - 1 would.
 function subtreeTextObject(cm, head, motionArgs, vim) {
   const doc = cm.cm6.state.doc;
   const inner = !!motionArgs.textObjectInner;
+  let skip = 0;
+  const row = tableRowRange(doc, head.line + 1, inner);
+  if (row) {
+    const Pos = head.constructor;
+    const from = new Pos(head.line, row.from);
+    // In charwise visual mode the head is on the last selected character.
+    const to = new Pos(head.line, vim.visualMode ? row.to - 1 : row.to);
+    // `ir` on a row with no text between its pipes selects nothing, as in Vim
+    // Motions, and counts as covered in visual mode.
+    const empty = row.from >= row.to;
+    if ((motionArgs.repeat || 1) === 1) {
+      if (!empty && !(vim.visualMode && selectionCovers(vim, from, to))) return [from, to];
+      if (empty && !vim.visualMode) return null;
+    }
+    skip = 1;
+  }
   const headings = enclosingHeadings(doc, head.line + 1);
   let selFirst = Infinity, selLast = -Infinity;
   if (vim.visualMode) {
@@ -739,7 +762,7 @@ function subtreeTextObject(cm, head, motionArgs, vim) {
     selLast = Math.max(vim.sel.anchor.line, vim.sel.head.line) + 1;
   }
   let range = null;
-  for (let i = Math.min((motionArgs.repeat || 1), headings.length) - 1; i < headings.length; i++) {
+  for (let i = Math.min(Math.max(1, (motionArgs.repeat || 1) - skip), headings.length) - 1; i < headings.length; i++) {
     const h = headings[i];
     let first = inner ? h + 1 : h;
     const last = sectionEnd(doc, h, !inner);
@@ -753,6 +776,33 @@ function subtreeTextObject(cm, head, motionArgs, vim) {
   if (vim.visualMode) vim.visualLine = true;
   else motionArgs.linewise = true;
   return [new Pos(range.first - 1, 0), new Pos(range.last - 1, 0)];
+}
+
+// Columns of line n's table row for `ar` (the line) or `ir` (between the
+// first and last unescaped pipe), end exclusive; null if line n isn't a table
+// row: a line starting with `|` that has two unescaped pipes, outside code
+// blocks and front matter. A `|` after an odd number of backslashes is escaped.
+function tableRowRange(doc, n, inner) {
+  const text = doc.line(n).text;
+  if (!/^\s*\|/.test(text) || scanLines(doc).code[n]) return null;
+  const pipes = [];
+  for (let i = 0, slashes = 0; i < text.length; i++) {
+    if (text[i] === "|" && slashes % 2 === 0) pipes.push(i);
+    slashes = text[i] === "\\" ? slashes + 1 : 0;
+  }
+  if (pipes.length < 2) return null;
+  return inner ? { from: pipes[0] + 1, to: pipes[pipes.length - 1] } : { from: 0, to: text.length };
+}
+
+// The visual selection takes in from..to (to inclusive), or their lines in
+// linewise visual mode.
+function selectionCovers(vim, from, to) {
+  const { anchor, head } = vim.sel;
+  const [start, end] = anchor.line < head.line || (anchor.line === head.line && anchor.ch <= head.ch)
+    ? [anchor, head] : [head, anchor];
+  if (vim.visualLine) return start.line <= from.line && end.line >= to.line;
+  return (start.line < from.line || (start.line === from.line && start.ch <= from.ch)) &&
+    (end.line > to.line || (end.line === to.line && end.ch >= to.ch));
 }
 
 // org-move-subtree-down/up (M-↓/M-↑): swap the subtree under the cursor with

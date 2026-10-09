@@ -22,7 +22,7 @@ dom.window.document.createRange = () => {
 
 const { EditorState, EditorSelection } = require("@codemirror/state");
 const { EditorView, runScopeHandlers } = require("@codemirror/view");
-const { foldable, foldedRanges, foldEffect, codeFolding } = require("@codemirror/language");
+const { foldable, foldService, foldedRanges, foldEffect, codeFolding } = require("@codemirror/language");
 const { markdown } = require("@codemirror/lang-markdown");
 const { history, undo } = require("@codemirror/commands");
 const { vim, Vim, getCM, CodeMirror } = require("@replit/codemirror-vim");
@@ -217,6 +217,40 @@ test("Tab leaves folded list items in the subtree folded", async () => {
   assert.deepEqual(visibleLines(v), [1, 4, 5]);
   await keys(v, "<Tab>");
   assert.deepEqual(visibleLines(v), [1, 2, 4, 5]);
+});
+
+// Vim Motions adds a heading fold service that ends at the last non-blank
+// line. Folds are Obsidian's, blank lines before the next heading included.
+test("Tab and S-Tab hide the blank lines under a heading with another fold service", async () => {
+  const trimmed = foldService.of((state, from, to) => {
+    const doc = state.doc;
+    const n = doc.lineAt(from).number;
+    const level = (doc.line(n).text.match(/^#+ /) || [""])[0].length;
+    if (!level) return null;
+    let last = n;
+    for (let i = n + 1; i <= doc.lines; i++) {
+      const m = doc.line(i).text.match(/^#+ /);
+      if (m && m[0].length <= level) break;
+      if (doc.line(i).text.trim()) last = i;
+    }
+    return last > n ? { from: to, to: doc.line(last).to } : null;
+  });
+  if (activeView) activeView.destroy();
+  const parent = document.createElement("div");
+  document.body.appendChild(parent);
+  const v = (activeView = new EditorView({
+    parent,
+    state: EditorState.create({
+      doc: "# A\na\n\n## B\nb\n\n# C\nc",
+      extensions: [vim(), history(), markdown(), codeFolding(), trimmed, plugin.extensions],
+    }),
+  }));
+  await keys(v, "<Tab>");
+  assert.deepEqual(visibleLines(v), [1, 7, 8]);
+  await keys(v, "<Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 4, 7, 8]);
+  await keys(v, "<S-Tab>");
+  assert.deepEqual(visibleLines(v), [1, 7]);
 });
 
 test("S-Tab cycles overview -> contents -> show all -> overview", async () => {

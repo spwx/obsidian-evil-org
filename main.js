@@ -4,7 +4,7 @@ const { Plugin, MarkdownView } = require("obsidian");
 const { Prec, EditorState, EditorSelection, ChangeSet } = require("@codemirror/state");
 const { keymap, EditorView } = require("@codemirror/view");
 const { invertedEffects } = require("@codemirror/commands");
-const { foldable, foldedRanges, foldEffect, unfoldEffect, indentUnit } = require("@codemirror/language");
+const { foldable, foldService, foldedRanges, foldEffect, unfoldEffect, indentUnit } = require("@codemirror/language");
 
 // Markdown has six heading levels; a line of seven or more `#`s is body text.
 const MAX_LEVEL = 6;
@@ -156,9 +156,9 @@ function outlineHeadings(doc, first, last, floor) {
 }
 
 // Folds that hide the text after each shown heading up to the next shown
-// heading, or through line last. Blank lines before the next heading stay
-// visible, as with the editor's own heading folds, which are used where the
-// hidden text is a whole section.
+// heading, or through line last. Where the hidden text is a whole section the
+// heading's own fold is used, blank lines before the next heading included;
+// elsewhere those blank lines stay visible.
 function outlineFolds(state, shown, last) {
   const doc = state.doc;
   const out = [];
@@ -388,6 +388,19 @@ function sectionEnd(doc, h, withBlank) {
   }
   return last;
 }
+
+// A heading's fold, as Obsidian's own: from the end of the heading line to the
+// last line before a heading of the same or a higher level, trailing blank
+// lines included. Ahead of other fold services, since one that a plugin adds
+// may end the fold at the last non-blank line (Vim Motions does), leaving a
+// blank line showing under every closed heading.
+const headingFolds = Prec.highest(foldService.of((state, from, to) => {
+  const doc = state.doc;
+  const n = doc.lineAt(from).number;
+  if (!headingLevels(doc)[n]) return null;
+  const end = doc.line(sectionEnd(doc, n, true)).to;
+  return end > to ? { from: to, to: end } : null;
+}));
 
 // Fold range for a heading's section: CodeMirror's (Obsidian's) own range,
 // or, if that isn't available yet for freshly inserted text, the same range
@@ -1538,6 +1551,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
       ),
       EditorState.transactionFilter.of((tr) => keepSelectedFoldsClosed(tr, this.app)),
       invertedEffects.of(deletedFolds),
+      headingFolds,
       EditorView.updateListener.of((update) => {
         // An editor that opened without a leaf change, as in a pop-out or an
         // embed, may bring an adapter class not yet patched. Only while the

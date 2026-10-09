@@ -1935,6 +1935,48 @@ for (const short of ["end", "hidden"]) test(`j over a closed heading goes to the
   assert.deepEqual(foldedLines(v), [3]);
 });
 
+// Vim Motions bundles a fork of codemirror-vim with an adapter class of its
+// own, and sets window.CodeMirrorAdapter to a plain object whose Vim getter
+// returns the fork's engine. The fork's class is patched from the editor.
+test("j over a closed heading goes past it with an adapter class of another plugin", async () => {
+  const stock = CodeMirror.prototype.findPosV.stock || CodeMirror.prototype.findPosV;
+  const forkClass = () => {
+    class Fork extends CodeMirror {}
+    Fork.prototype.findPosV = function (...args) { return stock.apply(this, args); };
+    return Fork;
+  };
+  const adapter = window.CodeMirrorAdapter;
+  const bridge = {};
+  Object.defineProperty(bridge, "Vim", { get: () => Vim, configurable: true });
+  window.CodeMirrorAdapter = bridge;
+  try {
+    // Found from the active editor when the overrides are installed.
+    const Fork = forkClass();
+    const v = open(DOC);
+    Object.setPrototypeOf(v.cm, Fork.prototype);
+    plugin.installVimOverrides();
+    assert.ok(Fork.prototype.findPosV.stock);
+    stubMoveVertically(v);
+    fold(v, 3);
+    gotoLine(v, 3);
+    await keys(v, "j");
+    assert.equal(v.state.doc.lineAt(v.state.selection.main.head).number, 7);
+    assert.deepEqual(foldedLines(v), [3]);
+    // Found when an editor with another class first updates.
+    const Later = forkClass();
+    const w = open(DOC);
+    Object.setPrototypeOf(w.cm, Later.prototype);
+    stubMoveVertically(w);
+    fold(w, 3);
+    assert.ok(Later.prototype.findPosV.stock);
+    gotoLine(w, 3);
+    await keys(w, "j");
+    assert.equal(w.state.doc.lineAt(w.state.selection.main.head).number, 7);
+  } finally {
+    window.CodeMirrorAdapter = adapter;
+  }
+});
+
 // Mobile has no Vim mode: window.CodeMirrorAdapter is missing and editors carry
 // no vim extension. The plugin still loads, quietly, and its commands still run.
 test("without a Vim engine the plugin loads quietly and commands still work", () => {

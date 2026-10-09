@@ -75,7 +75,7 @@ To install the plugin manually:
 Obsidian does not have a public API for its Vim mode. For this reason, the plugin changes the Vim engine that Obsidian makes available at `window.CodeMirrorAdapter.Vim`. The plugin makes these changes:
 
 - It changes the `expandToLine` motion so that the motion includes folded lines.
-- It wraps the `findPosV` method of `window.CodeMirrorAdapter` so that `j` moves past a closed fold in one step. Without this change, the first `j` on a folded heading puts the cursor at the end of the heading.
+- It wraps the `findPosV` method of the Vim adapter class that the editor uses (`window.CodeMirrorAdapter` in Obsidian, or the class of a Vim engine that another plugin, such as Vim Motions, bundles) so that `j` moves past a closed fold in one step. Without this change, the first `j` on a folded heading puts the cursor at the end of the heading.
 - It maps `o`, `O`, `p`, `P`, `d`, `>`, `<`, `<A-j>`, `<A-k>`, `ar`, `ir`, `ae`, and `ie`. In visual mode, it also maps `x`, `X`, and `D`.
 - It gets `Alt-j` and `Alt-k` in Vim normal mode, in the main window and in pop-out windows, before the editor and Obsidian's hotkeys get them. Thus, in Vim normal mode, an Obsidian hotkey that you set to `Alt-j` or `Alt-k` does not operate. The plugin gets the keys by the letter that you type. If the key does not give a letter, the plugin uses the key code. On macOS, the Vim mode of Obsidian can lose the Alt modifier. For example, `Option-j` gives `∆`.
 - It adds a `Tab` and `Shift-Tab` key binding to the editor. The binding operates only in Vim normal mode.

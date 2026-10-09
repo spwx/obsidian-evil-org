@@ -1339,7 +1339,13 @@ const COMMANDS = [
 module.exports = class EvilOrgPlugin extends Plugin {
   installVimOverrides() {
     const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
-    if (!Vim || Vim === this.patchedVim) return;
+    if (!Vim) return;
+    // Obsidian's adapter class even before an editor shows up, and the class
+    // of the active editor's adapter, which may be another.
+    if (typeof window.CodeMirrorAdapter === "function") this.patchFindPosV(window.CodeMirrorAdapter.prototype);
+    const view = activeEditorView(this.app);
+    if (view) this.patchFindPosV(view.cm);
+    if (Vim === this.patchedVim) return;
     // Every engine patched keeps the overrides until unload, not just the
     // current one. The engine counts as patched and its restorer is queued
     // before any override, so if one throws (say, after an update changes
@@ -1368,15 +1374,6 @@ module.exports = class EvilOrgPlugin extends Plugin {
   // The overrides installVimOverrides makes on one Vim engine.
   overrideVim(Vim) {
     Vim.defineMotion("expandToLine", foldAwareExpandToLine);
-    // Obsidian's window.CodeMirrorAdapter is the adapter class, shared by
-    // every Vim engine, so it is patched once.
-    const adapter = window.CodeMirrorAdapter.prototype;
-    if (adapter && typeof adapter.findPosV === "function" && !adapter.findPosV.stock) {
-      adapter.findPosV = foldAwareFindPosV(adapter.findPosV);
-      (this.vimRestorers ||= []).push(() => {
-        adapter.findPosV = adapter.findPosV.stock || adapter.findPosV;
-      });
-    }
     // A command's motion runs before its action; these entries shadow the
     // stock `p`/`P` in normal mode (visual-mode paste is untouched).
     Vim.defineMotion("orgPasteAfter", pasteMotion(Vim, true));
@@ -1424,6 +1421,20 @@ module.exports = class EvilOrgPlugin extends Plugin {
       Vim.mapCommand(key, "action", "orgOpenLine", { after },
         { isEdit: true, interlaceInsertRepeat: true, context: "normal" });
     }
+  }
+
+  // `j` past a closed fold wraps findPosV on the class of the adapter at
+  // view.cm. In Obsidian that's window.CodeMirrorAdapter, but a plugin that
+  // bundles its own codemirror-vim (vim-motions does) has a class of its own
+  // and may leave window.CodeMirrorAdapter a plain object, so the method is
+  // looked up from the adapter itself. Each class is patched once.
+  patchFindPosV(adapter) {
+    while (adapter && !Object.hasOwn(adapter, "findPosV")) adapter = Object.getPrototypeOf(adapter);
+    if (!adapter || typeof adapter.findPosV !== "function" || adapter.findPosV.stock) return;
+    adapter.findPosV = foldAwareFindPosV(adapter.findPosV);
+    (this.vimRestorers ||= []).push(() => {
+      adapter.findPosV = adapter.findPosV.stock || adapter.findPosV;
+    });
   }
 
   // On macOS Option-j arrives as `∆` with code "KeyJ", and some vim builds
@@ -1478,6 +1489,10 @@ module.exports = class EvilOrgPlugin extends Plugin {
       EditorState.transactionFilter.of((tr) => keepSelectedFoldsClosed(tr, this.app)),
       invertedEffects.of(deletedFolds),
       EditorView.updateListener.of((update) => {
+        // An editor that opened without a leaf change, as in a pop-out or an
+        // embed, may bring an adapter class not yet patched. Only while the
+        // overrides are in, so an editor left open after unload stays stock.
+        if (this.patchedVim) this.patchFindPosV(update.view.cm);
         if (!update.selectionSet || !visualLineMode(update.view)) return;
         if (!foldExtendedSelection(update.state)) return;
         // Vim is still mid-command here. Adjusting after it finishes makes the

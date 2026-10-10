@@ -26,12 +26,13 @@ The keys in the table that follows operate only in Vim normal mode and Vim visua
 | `o` / `O` | In a list, these keys open a new item below or above the item at the cursor (`evil-org-open-below`/`-above`). The new item has the same indent and bullet. In a numbered list, it gets the next number, and the plugin renumbers the items after it. If the item has a checkbox, the new item gets an empty checkbox. `o` opens the new item after the sub-items of the item, as in org-mode. On a heading, `o` and `O` open a usual line. To open a new heading, use the **Insert heading** command. On a folded heading, item, or block, `o` opens the line below the fold, not in it. A count (`3o`) and `.` open more items. |
 | `ar` / `ir` | Text objects for a subtree (evil-org `ar`/`ir`). They operate on folded and open subtrees. `ar` is the subtree that contains the cursor, plus the blank lines after it. `ir` is the body of that subtree. It does not include the heading or the blank lines around it. You can use them with all operators (`dar`, `yar`, `cir`, `>ar`) and in visual mode. With a count (`d2ar`), or when you type `ar` again in visual mode, the selection includes the parent subtree. On a Markdown table row, `ar` is the row and `ir` is the text between its first and last `|`, as in Vim Motions. There, a count of 2 or typing `ar` again in visual mode selects the subtree. |
 | `ae` / `ie` | Text objects for the Markdown element at the cursor (evil-org `ae`/`ie`). The element can be a list item with its sub-items, a list, a fenced code block, front matter, a block quote or callout, a paragraph, or a heading line. A paragraph in the body of a list item is an element in that item. `ae` is the element, plus the blank lines after it. On a blank line, `ae` is the element above it. `ie` is the inside of the element. For a list item or a heading, it is the text after the bullet, number, checkbox, or `#` characters. For a code block or front matter, it is the lines between the fences. For a callout, it is the lines after the title line. For other elements, it is the lines without the blank lines after them. You can use them with all operators (`dae`, `yae`, `cie`, `>ae`) and in visual mode. With a count (`d2ae`), or when you type `ae` again in visual mode, the selection includes the next element that contains it: from a paragraph in an item, the item; from a sub-item, its list, then the parent item, then the subtrees around it, as with `ar`. A folded heading or item counts as one line, so `dae` on a folded heading deletes all of the subtree. |
+| `gh` | Moves the cursor to the heading of the line it is on (evil-org `gh`, `org-up-element`). On a heading, it moves to the parent heading, so typing `gh` again goes up the outline. With a count (`2gh`), it goes up that many levels. On a top-level heading, or before the first heading, the cursor does not move. It is linewise with operators (`dgh` deletes from the heading to the cursor line), and `Ctrl-o` goes back. |
 
 If a range has no headings and does not start on a list item, `>` and `<` indent its lines as in standard Vim. In fenced code blocks and front matter, a line that starts with `#` is not a heading.
 
 ## Commands
 
-Six actions are also Obsidian commands. You can set hotkeys for them in **Settings → Hotkeys**:
+Seven actions are also Obsidian commands. You can set hotkeys for them in **Settings → Hotkeys**:
 
 - **Cycle fold under cursor (TAB in org-mode)**: same function as `Tab`
 - **Cycle global fold overview (S-TAB in org-mode)**: same function as `Shift-Tab`
@@ -39,6 +40,7 @@ Six actions are also Obsidian commands. You can set hotkeys for them in **Settin
 - **Move subtree up (M-↑ in org-mode)**: same function as `Alt-k`. It moves the subtree, the list item, or the line at the cursor up.
 - **Insert heading (M-RET in org-mode)**: opens a new heading after the subtree that contains the cursor. The new heading has the same level as the heading of that subtree. If the cursor is not under a heading, the new heading has level 1.
 - **Insert subheading**: opens a new heading at the end of the subtree that contains the cursor. The new heading has one more `#` than the heading of that subtree, to a maximum of 6.
+- **Go to heading of this line (org-up-element)**: same function as `gh`. It moves the cursor to the heading of the line it is on, or from a heading to its parent heading.
 
 These commands do not have default hotkeys. You must set the hotkeys yourself. Different from the keys in the table, these commands also operate in insert mode and when Vim mode is off. In Vim normal mode, the insert commands go to insert mode.
 
@@ -76,7 +78,7 @@ Obsidian does not have a public API for its Vim mode. For this reason, the plugi
 
 - It changes the `expandToLine` motion so that the motion includes folded lines.
 - It wraps the `findPosV` method of the Vim adapter class that the editor uses (`window.CodeMirrorAdapter` in Obsidian, or the class of a Vim engine that another plugin, such as Vim Motions, bundles) so that `j` moves past a closed fold in one step. Without this change, the first `j` on a folded heading puts the cursor at the end of the heading.
-- It maps `o`, `O`, `p`, `P`, `d`, `>`, `<`, `<A-j>`, `<A-k>`, `ar`, `ir`, `ae`, and `ie`. In visual mode, it also maps `x`, `X`, and `D`.
+- It maps `o`, `O`, `p`, `P`, `d`, `>`, `<`, `<A-j>`, `<A-k>`, `ar`, `ir`, `ae`, `ie`, and `gh`. In visual mode, it also maps `x`, `X`, and `D`.
 - It gets `Alt-j` and `Alt-k` in Vim normal mode, in the main window and in pop-out windows, before the editor and Obsidian's hotkeys get them. Thus, in Vim normal mode, an Obsidian hotkey that you set to `Alt-j` or `Alt-k` does not operate. The plugin gets the keys by the letter that you type. If the key does not give a letter, the plugin uses the key code. On macOS, the Vim mode of Obsidian can lose the Alt modifier. For example, `Option-j` gives `∆`.
 - It adds a `Tab` and `Shift-Tab` key binding to the editor. The binding operates only in Vim normal mode.
 - It gives headings the same fold range as Obsidian: up to the next heading of the same or a higher level, including the blank lines before it. This range has priority over the fold ranges of other plugins. For example, Vim Motions ends a heading fold at the last line that is not blank, so a blank line shows under each folded heading.

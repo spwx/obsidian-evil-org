@@ -1626,6 +1626,61 @@ test("ae and ie with nothing around them do nothing", async () => {
   assert.equal(text(w), "#\nx");
 });
 
+// --- gh ------------------------------------------------------------------------
+
+test("gh from a body line goes to its heading, again to the parent", async () => {
+  const v = open(DOC);
+  gotoLine(v, 6);
+  await keys(v, "l");
+  await keys(v, "gh");
+  assert.equal(v.state.selection.main.head, v.state.doc.line(5).from);
+  await keys(v, "gh");
+  assert.equal(cursorLine(v), 3);
+  await keys(v, "gh");
+  assert.equal(cursorLine(v), 1);
+});
+
+test("gh with a count goes up that many levels, stopping at the top", async () => {
+  const v = open(DOC);
+  gotoLine(v, 6);
+  await keys(v, "2gh");
+  assert.equal(cursorLine(v), 3);
+  gotoLine(v, 6);
+  await keys(v, "9gh");
+  assert.equal(cursorLine(v), 1);
+});
+
+test("gh on a top-level heading or before the first heading stays", async () => {
+  const v = open("intro\n# A\na");
+  gotoLine(v, 2);
+  await keys(v, "gh");
+  assert.equal(cursorLine(v), 2);
+  gotoLine(v, 1);
+  await keys(v, "gh");
+  assert.equal(cursorLine(v), 1);
+});
+
+test("gh skips # lines in code blocks", async () => {
+  const v = open("# A\n```\n# not\n```\nx");
+  gotoLine(v, 5);
+  await keys(v, "gh");
+  assert.equal(cursorLine(v), 1);
+});
+
+test("dgh deletes linewise from the heading to the cursor line", async () => {
+  const v = open(DOC);
+  gotoLine(v, 6);
+  await keys(v, "dgh");
+  assert.equal(text(v), "# A\na\n## B\nb\n## D\nd");
+});
+
+test("<C-o> after gh goes back", async () => {
+  const v = open(DOC);
+  gotoLine(v, 8);
+  await keys(v, "gh<C-o>");
+  assert.equal(cursorLine(v), 8);
+});
+
 // --- o / O ---------------------------------------------------------------------
 
 // Insert mode keys are the browser's, not vim's: type text as an edit.
@@ -1869,7 +1924,20 @@ const runCommand = (id, view) => plugin.commands.find((c) => c.id === id).editor
 test("the commands keep their ids", () => {
   assert.deepEqual(plugin.commands.map((c) => c.id), [
     "cycle-local", "cycle-global", "move-subtree-down", "move-subtree-up", "insert-heading", "insert-subheading",
+    "up-heading",
   ]);
+});
+
+test("go to heading moves to the line's heading, then to its parent", async () => {
+  const v = open(DOC);
+  gotoLine(v, 6);
+  runCommand("up-heading", v);
+  assert.equal(v.state.selection.main.head, v.state.doc.line(5).from);
+  runCommand("up-heading", v);
+  assert.equal(cursorLine(v), 3);
+  runCommand("up-heading", v);
+  runCommand("up-heading", v);
+  assert.equal(cursorLine(v), 1);
 });
 
 test("insert heading opens a sibling after the subtree the cursor is in", async () => {
@@ -2167,7 +2235,7 @@ test("unload restores every Vim engine the plugin patched", async () => {
   assert.ok(!CodeMirror.prototype.findPosV.stock);
   assert.deepEqual(calls.slice(installed).sort(), [
     "action orgMoveSubtree", "action orgOpenLine", "motion expandToLine", "motion orgElement", "motion orgPasteAfter", "motion orgPasteBefore",
-    "motion orgSubtree", "operator orgDelete", "operator orgIndent",
+    "motion orgSubtree", "motion orgUpHeading", "operator orgDelete", "operator orgIndent",
   ]);
   // Vim, patched twice, is back to stock: dd on a folded heading deletes one line.
   const v = open(DOC);
@@ -2212,6 +2280,13 @@ test("after unload, M-j, dar and dae do nothing", async () => {
   gotoLine(v, 3);
   await keys(v, "<A-j>dardaedie");
   assert.equal(text(v), DOC);
+});
+
+test("after unload, gh does not move", async () => {
+  const v = open(DOC);
+  gotoLine(v, 6);
+  await keys(v, "gh");
+  assert.equal(cursorLine(v), 6);
 });
 
 (async () => {

@@ -738,6 +738,27 @@ function enclosingHeadings(doc, n) {
   return out;
 }
 
+// evil-org's `org-up-element`, for headings: from line n, the heading it is
+// under; from a heading, its parent. A count goes up that many levels,
+// stopping at the top-level heading. 0 with no heading above.
+function upHeading(doc, n, count) {
+  const headings = enclosingHeadings(doc, n).filter((h) => h !== n);
+  return headings.length ? headings[Math.min(count, headings.length) - 1] : 0;
+}
+
+// `gh` motion: see upHeading. With no heading above, the cursor stays.
+function upHeadingMotion(cm, head, motionArgs) {
+  const h = upHeading(cm.cm6.state.doc, head.line + 1, motionArgs.repeat || 1);
+  return h ? { line: h - 1, ch: 0 } : head;
+}
+
+// The up-heading command: see upHeading.
+function goUpHeading(view) {
+  const doc = view.state.doc;
+  const h = upHeading(doc, doc.lineAt(view.state.selection.main.head).number, 1);
+  if (h) view.dispatch({ selection: { anchor: doc.line(h).from }, scrollIntoView: true });
+}
+
 // `ar`/`ir` text objects. `ar` is the subtree of the heading the cursor is
 // under, heading included, plus trailing blank lines; `ir` is its body without
 // the heading or leading and trailing blank lines. A count, or repeating `ar`
@@ -1397,6 +1418,7 @@ const COMMANDS = [
   ["move-subtree-up", "Move subtree up (M-↑ in org-mode)", (view) => moveSubtree(view, false, 1)],
   ["insert-heading", "Insert heading (M-RET in org-mode)", (view) => insertHeading(view, false)],
   ["insert-subheading", "Insert subheading", (view) => insertHeading(view, true)],
+  ["up-heading", "Go to heading of this line (org-up-element)", goUpHeading],
 ];
 
 module.exports = class EvilOrgPlugin extends Plugin {
@@ -1421,6 +1443,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
       Vim.defineAction("orgMoveSubtree", () => {});
       Vim.defineMotion("orgSubtree", () => null);
       Vim.defineMotion("orgElement", () => null);
+      Vim.defineMotion("orgUpHeading", (_cm, head) => head);
       Vim.defineAction("orgOpenLine", function (cm, args, vim) {
         return this.newLineAndEnterInsertMode(cm, args, vim);
       });
@@ -1477,6 +1500,11 @@ module.exports = class EvilOrgPlugin extends Plugin {
     Vim.defineMotion("orgElement", elementTextObject);
     Vim.mapCommand("ae", "motion", "orgElement", {});
     Vim.mapCommand("ie", "motion", "orgElement", { textObjectInner: true });
+    // `gh` shadows vim's select mode (codemirror-vim has it in some builds,
+    // such as the one in Vim Motions). Like `gg`, it is linewise for
+    // operators and goes on the jump list.
+    Vim.defineMotion("orgUpHeading", upHeadingMotion);
+    Vim.mapCommand("gh", "motion", "orgUpHeading", { linewise: true, toJumplist: true });
     // `o`/`O` shadow the stock ones. Like those, a count or `.` runs the
     // action again before each repeat of the typed text.
     Vim.defineAction("orgOpenLine", guarded(openLine));

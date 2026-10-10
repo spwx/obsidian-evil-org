@@ -354,6 +354,47 @@ test("V starting inside a fold closed under it grows to the fold's heading", asy
   assert.equal(text(v), "# A\na");
 });
 
+// Vim Motions' vim build draws V mode's lines itself and leaves the editor
+// only a cursor at the start of the head's line.
+async function withCursorOnlyVisualLine(fn) {
+  const stock = CodeMirror.prototype.setSelections;
+  CodeMirror.prototype.setSelections = function (ranges, primary) {
+    const vs = this.state.vim;
+    if (vs && vs.visualMode && vs.visualLine && ranges.length === 1) return this.setCursor(ranges[0].head.line, 0);
+    return stock.call(this, ranges, primary);
+  };
+  try {
+    await fn();
+  } finally {
+    CodeMirror.prototype.setSelections = stock;
+  }
+}
+
+// 1-based lines of vim's own V selection, anchor then head.
+function visualLines(view) {
+  const { anchor, head } = getCM(view).state.vim.sel;
+  return [anchor.line + 1, head.line + 1];
+}
+
+test("V keeps its anchor when vim leaves the editor only a cursor", async () => {
+  await withCursorOnlyVisualLine(async () => {
+    const v = open("- a\n- b\n- c");
+    gotoLine(v, 1);
+    await keys(v, "V2G");
+    assert.deepEqual(visualLines(v), [1, 2]);
+  });
+});
+
+test("V onto a folded heading takes in the fold when vim leaves the editor only a cursor", async () => {
+  await withCursorOnlyVisualLine(async () => {
+    const v = open(DOC);
+    fold(v, 3);
+    gotoLine(v, 1);
+    await keys(v, "V3G");
+    assert.deepEqual(visualLines(v), [1, 6]);
+  });
+});
+
 // --- undo brings folds back --------------------------------------------------
 
 test("u after dd on a folded heading restores it folded", async () => {

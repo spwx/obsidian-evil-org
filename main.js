@@ -338,17 +338,24 @@ function foldedLineStart(doc, folds, pos) {
 }
 
 // Vim-style V over closed folds: grow the linewise selection so that any fold
-// touching its first or last line is selected in full.
-function foldExtendedSelection(state) {
-  const { anchor, head } = state.selection.main;
-  const doc = state.doc;
-  const folds = allFolds(state);
-  const top = foldedLineStart(doc, folds, Math.min(anchor, head));
-  const bottom = foldedLineEnd(doc, folds, Math.max(anchor, head));
-  const headIsTop = head < anchor;
-  const next = headIsTop ? { anchor: bottom, head: top } : { anchor: top, head: bottom };
-  if (next.anchor === anchor && next.head === head) return null;
-  return next;
+// touching its first or last line is selected in full. Taken from vim's own
+// selection, not the editor's: some vim builds (Vim Motions') leave only a
+// cursor on the head's line in V mode and draw the lines themselves. Null
+// unless a fold grows it.
+function foldExtendedSelection(view) {
+  const vim = getVimState(view);
+  if (!vim || !vim.sel) return null;
+  const { anchor, head } = vim.sel;
+  const doc = view.state.doc;
+  const folds = allFolds(view.state);
+  // Mid-command, as vim leaves V after a delete, vim.sel can be past the end.
+  const line = (n) => doc.line(Math.min(n + 1, doc.lines));
+  const first = line(Math.min(anchor.line, head.line));
+  const last = line(Math.max(anchor.line, head.line));
+  const top = foldedLineStart(doc, folds, first.from);
+  const bottom = foldedLineEnd(doc, folds, last.from);
+  if (top === first.from && bottom === last.to) return null;
+  return head.line < anchor.line ? { anchor: bottom, head: top } : { anchor: top, head: bottom };
 }
 
 // codemirror-vim unfolds every fold its selection overlaps once a command
@@ -1586,14 +1593,14 @@ module.exports = class EvilOrgPlugin extends Plugin {
         // overrides are in, so an editor left open after unload stays stock.
         if (this.patchedVim) this.patchFindPosV(update.view.cm);
         if (!update.selectionSet || !visualLineMode(update.view)) return;
-        if (!foldExtendedSelection(update.state)) return;
+        if (!foldExtendedSelection(update.view)) return;
         // Vim is still mid-command here. Adjusting after it finishes makes the
         // change count as external, so vim re-syncs its own selection (used
         // by d/y/c/>) from ours.
         const view = update.view;
         afterVim(view, () => {
           if (!visualLineMode(view)) return;
-          const next = foldExtendedSelection(view.state);
+          const next = foldExtendedSelection(view);
           if (next) view.dispatch({ selection: EditorSelection.single(next.anchor, next.head) });
         });
       }),

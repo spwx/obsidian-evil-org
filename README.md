@@ -8,7 +8,7 @@ The plugin uses Markdown headings as org headlines. The `Tab` key changes the fo
 
 The plugin is primarily a set of Vim keys. You must set **Settings → Editor → Vim key bindings** to on.
 
-The keys in the table that follows operate only in Vim normal mode and Vim visual mode. They do not change insert mode or usual editing. The six [commands](#commands) are different. They operate in all modes, with or without Vim.
+The keys in the table that follows operate only in Vim normal mode and Vim visual mode. They do not change insert mode or usual editing. The [commands](#commands) and [indent mode](#indent-mode) are different. They operate in all modes, with or without Vim.
 
 ## Keys
 
@@ -32,7 +32,7 @@ If a range has no headings and does not start on a list item, `>` and `<` indent
 
 ## Commands
 
-Seven actions are also Obsidian commands. You can set hotkeys for them in **Settings → Hotkeys**:
+Eight actions are also Obsidian commands. You can set hotkeys for them in **Settings → Hotkeys**:
 
 - **Cycle fold under cursor (TAB in org-mode)**: same function as `Tab`
 - **Cycle global fold overview (S-TAB in org-mode)**: same function as `Shift-Tab`
@@ -41,6 +41,7 @@ Seven actions are also Obsidian commands. You can set hotkeys for them in **Sett
 - **Insert heading (M-RET in org-mode)**: opens a new heading after the subtree that contains the cursor. The new heading has the same level as the heading of that subtree. If the cursor is not under a heading, the new heading has level 1.
 - **Insert subheading**: opens a new heading at the end of the subtree that contains the cursor. The new heading has one more `#` than the heading of that subtree, to a maximum of 6.
 - **Go to heading of this line (org-up-element)**: same function as `gh`. It moves the cursor to the heading of the line it is on, or from a heading to its parent heading.
+- **Toggle indent mode (org-indent-mode)**: sets [indent mode](#indent-mode) to on or off.
 
 These commands do not have default hotkeys. You must set the hotkeys yourself. Different from the keys in the table, these commands also operate in insert mode and when Vim mode is off. In Vim normal mode, the insert commands go to insert mode.
 
@@ -56,6 +57,36 @@ In org-mode, `M-RET` inserts a heading. To use `Alt-Enter` for **Insert heading*
 If you do not remove the hotkey of **Follow link under cursor**, `Alt-Enter` does not insert a heading.
 
 You cannot map `Alt-Enter` in a vimrc file. Obsidian gets its hotkeys before Vim does, so Vim does not get `Alt-Enter`.
+
+## Indent mode
+
+Indent mode indents the text of a note by the outline, as `org-indent-mode` does in org-mode. Obsidian does not have this function. The plugin does not change the text of the note. It changes only how the editor shows the lines.
+
+A heading of level 1 is not indented. A heading of level 2 is indented one step, a heading of level 3 two steps, and so on. The lines under a heading are indented one step more than the heading. Thus, a heading starts at the same position as the text of its parent, as the star of a heading does in org-mode. Text before the first heading is not indented. Wrapped lines align with the first line, and list items keep their indent. In Live Preview, tables, callouts, and embeds are indented with the text around them.
+
+In Live Preview, indent mode also shows a bullet in place of the `#` characters of a heading, as [org-bullets](https://github.com/sabof/org-bullets) does in org-mode. The bullet is `◉` for level 1, `○` for level 2, `✸` for level 3, and `✿` for level 4, then the sequence starts again. The bullet is one step wide, so the text of a heading aligns with the lines under it. When the cursor is on a heading, Obsidian shows the `#` characters, and the bullet goes away. Source mode does not show bullets.
+
+To set indent mode to on or off, use the **Toggle indent mode (org-indent-mode)** command, or **Settings → Evil Org → Indent mode**. The setting applies to all notes and stays after you restart Obsidian. Indent mode operates with or without Vim.
+
+One step is 1.5 times the font size of the editor. To change it, set the `--evil-org-indent` CSS variable in a [CSS snippet](https://help.obsidian.md/snippets). For example:
+
+```css
+.markdown-source-view { --evil-org-indent: 2ch; }
+```
+
+Indent mode operates only in the editor, not in reading view.
+
+### Compact headings
+
+Obsidian puts space above each heading. Thus, the headings of a folded outline are farther apart than lines of text. When you set **Settings → Evil Org → Compact headings** to on, the editor does not show this space or the blank lines between a heading and the next heading. Thus, the headings are on consecutive lines, as in org-mode. Blank lines before or after body text still show. When the cursor is on a hidden blank line, the line shows. The text of the note does not change. You can use this setting with or without indent mode.
+
+### Uniform heading size
+
+Obsidian shows headings in larger fonts than body text, and a higher level has a larger font. When you set **Settings → Evil Org → Uniform heading size** to on, the editor shows all headings at the font size and line height of body text, as in org-mode. Headings keep their color and weight. You can use this setting with or without indent mode.
+
+### Hide heading fold arrows
+
+When you set **Settings → Evil Org → Hide heading fold arrows** to on, the editor does not show the fold arrows of headings, as org-mode shows none. With indent mode, the bullets mark the headings. To fold and unfold headings, use `Tab` and `Shift-Tab`. A folded heading still shows the number of lines in its fold. List items keep their fold arrows.
 
 ## Installation
 

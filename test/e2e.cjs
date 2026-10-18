@@ -20,8 +20,8 @@ dom.window.document.createRange = () => {
   return r;
 };
 
-const { EditorState, EditorSelection } = require("@codemirror/state");
-const { EditorView, runScopeHandlers } = require("@codemirror/view");
+const { EditorState, EditorSelection, StateField, StateEffect } = require("@codemirror/state");
+const { EditorView, Decoration, WidgetType, runScopeHandlers } = require("@codemirror/view");
 const { foldable, foldService, foldedRanges, foldEffect, codeFolding } = require("@codemirror/language");
 const { markdown } = require("@codemirror/lang-markdown");
 const { history, undo } = require("@codemirror/commands");
@@ -34,18 +34,26 @@ class Plugin {
   registerEvent() {}
   registerDomEvent(el, type, fn, options) { el.addEventListener(type, fn, options); }
   addCommand(cmd) { this.commands.push(cmd); }
+  addSettingTab() {}
+  async loadData() { return null; }
+  async saveData() {}
 }
+class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; } }
+class Setting {}
 class MarkdownView {}
+// Obsidian's Live Preview flag; a test that wants Live Preview adds it.
+const editorLivePreviewField = StateField.define({ create: () => true, update: (v) => v });
 const app = {
   workspace: {
     getActiveViewOfType: () => (activeView ? { editor: { cm: activeView } } : null),
     onLayoutReady: (cb) => cb(),
     on: () => ({}),
+    updateOptions: () => {},
   },
 };
 const origLoad = Module._load;
 Module._load = function (request, ...rest) {
-  if (request === "obsidian") return { Plugin, MarkdownView };
+  if (request === "obsidian") return { Plugin, MarkdownView, PluginSettingTab, Setting, editorLivePreviewField };
   return origLoad.call(this, request, ...rest);
 };
 // Obsidian's adapter is the class itself, with the engine on it.
@@ -59,7 +67,7 @@ plugin.onload();
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-function open(text) {
+function open(text, extra = []) {
   if (activeView) activeView.destroy();
   const parent = document.createElement("div");
   document.body.appendChild(parent);
@@ -67,7 +75,7 @@ function open(text) {
     parent,
     state: EditorState.create({
       doc: text,
-      extensions: [vim(), history(), markdown(), codeFolding(), plugin.extensions],
+      extensions: [vim(), history(), markdown(), codeFolding(), plugin.extensions, extra],
     }),
   });
   return activeView;
@@ -1722,6 +1730,234 @@ test("<C-o> after gh goes back", async () => {
   assert.equal(cursorLine(v), 8);
 });
 
+// --- indent mode ---------------------------------------------------------------
+
+// org-indent-mode: lines indented in display by their depth in the outline.
+
+const toggleIndent = () => plugin.commands.find((c) => c.id === "toggle-indent").callback();
+
+// Each line's indent in steps of --evil-org-indent, from the DOM.
+function indentSteps(view) {
+  return [...view.contentDOM.querySelectorAll(".cm-line")].map((el) => {
+    const m = (el.getAttribute("style") || "").match(/calc\((\d+) \*/);
+    return m ? Number(m[1]) : 0;
+  });
+}
+
+test("every setting is off by default", async () => {
+  assert.deepEqual(plugin.settings, { indent: false, compactHeadings: false, uniformHeadings: false, hideFoldArrows: false });
+  assert.equal(plugin.settingExtensions.length, 0);
+  const v = open(DOC);
+  assert.deepEqual(indentSteps(v), [0, 0, 0, 0, 0, 0, 0, 0]);
+});
+
+test("indent mode puts a heading at its parent's text and its text one step in", async () => {
+  await toggleIndent();
+  try {
+    const v = open("intro\n" + DOC);
+    assert.deepEqual(indentSteps(v), [0, 0, 1, 1, 2, 2, 3, 1, 2]);
+  } finally {
+    await toggleIndent();
+  }
+  assert.deepEqual(indentSteps(open(DOC)), [0, 0, 0, 0, 0, 0, 0, 0]);
+});
+
+test("indent mode follows edits and leaves # lines in code blocks alone", async () => {
+  await toggleIndent();
+  try {
+    const v = open("# A\n```\n## x\n```\na");
+    assert.deepEqual(indentSteps(v), [0, 1, 1, 1, 1]);
+    v.dispatch({ changes: { from: v.state.doc.line(5).from, insert: "## " } });
+    v.dispatch({ changes: { from: v.state.doc.length, insert: "\nb" } });
+    assert.deepEqual(indentSteps(v), [0, 1, 1, 1, 1, 2]);
+  } finally {
+    await toggleIndent();
+  }
+});
+
+// The bullet shown on each line, "" for none.
+function bulletsShown(view) {
+  return [...view.contentDOM.querySelectorAll(".cm-line")].map((el) => {
+    const b = el.querySelector(".evil-org-bullet");
+    return b ? b.textContent : "";
+  });
+}
+
+test("indent mode shows org bullets in Live Preview, not on the cursor's line", async () => {
+  await toggleIndent();
+  try {
+    const v = open("# A\na\n## B\n### C\n#### D\n##### E", [editorLivePreviewField]);
+    gotoLine(v, 2);
+    assert.deepEqual(bulletsShown(v), ["◉", "", "○", "✸", "✿", "◉"]);
+    gotoLine(v, 3);
+    assert.deepEqual(bulletsShown(v), ["◉", "", "", "✸", "✿", "◉"]);
+  } finally {
+    await toggleIndent();
+  }
+});
+
+test("indent mode shows no bullets in Source mode", async () => {
+  await toggleIndent();
+  try {
+    const v = open("# A\na\n## B");
+    gotoLine(v, 2);
+    assert.deepEqual(bulletsShown(v), ["", "", ""]);
+  } finally {
+    await toggleIndent();
+  }
+});
+
+// A block widget standing in for a table that Live Preview draws over line 3.
+class TableWidget extends WidgetType {
+  toDOM() {
+    const el = document.createElement("div");
+    el.className = "cm-embed-block cm-table-widget";
+    return el;
+  }
+}
+const tableField = StateField.define({
+  create: (state) => Decoration.set(Decoration.replace({ widget: new TableWidget(), block: true })
+    .range(state.doc.line(3).from, state.doc.line(4).to)),
+  update: (deco, tr) => deco.map(tr.changes),
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+const frame = () => new Promise((r) => setTimeout(r, 50));
+
+test("indent mode indents a table widget with its line, then drops it when turned off", async () => {
+  await toggleIndent();
+  let v, table;
+  try {
+    v = open("# A\n## B\n| x |\n| - |\nb", [tableField]);
+    await frame();
+    table = v.contentDOM.querySelector(".cm-table-widget");
+    assert.match(table.style.getPropertyValue("margin-inline-start"), /^calc\(2 \* .* - var\(--size-4-4\)\)$/);
+    // jsdom drops the !important that Obsidian's own !important margin needs,
+    // so that part is only seen in Obsidian.
+  } finally {
+    await toggleIndent();
+  }
+  v.dispatch({ effects: StateEffect.reconfigure.of([vim(), markdown(), plugin.extensions, tableField]) });
+  assert.equal(table.style.getPropertyValue("margin-inline-start"), "");
+});
+
+test("turning indent mode off before a queued measure runs leaves the table unindented", async () => {
+  await toggleIndent();
+  let v, table;
+  try {
+    v = open("# A\n## B\n| x |\n| - |\nb", [tableField]);
+    await frame();
+    table = v.contentDOM.querySelector(".cm-table-widget");
+    // An edit queues a measure for the next frame.
+    v.dispatch({ changes: { from: v.state.doc.length, insert: "c" } });
+  } finally {
+    await toggleIndent();
+  }
+  v.dispatch({ effects: StateEffect.reconfigure.of([vim(), markdown(), plugin.extensions, tableField]) });
+  await frame();
+  assert.equal(table.style.getPropertyValue("margin-inline-start"), "");
+});
+
+// The padding the editor's styles give a heading line, "" for none.
+function headingPadding(view) {
+  return getComputedStyle(view.contentDOM.querySelector(".cm-line.HyperMD-header")).paddingTop;
+}
+
+test("compact headings removes the space above headings, and only while on", async () => {
+  // Obsidian's own rule, and the class its markdown mode gives a heading line.
+  const style = document.createElement("style");
+  style.textContent = ".cm-line.HyperMD-header { padding-top: 16px; }";
+  document.head.appendChild(style);
+  const heading = Decoration.line({ class: "HyperMD-header" });
+  const headings = EditorView.decorations.of(Decoration.set([heading.range(0)]));
+  try {
+    assert.equal(headingPadding(open("# A\na", [headings])), "16px");
+    await plugin.setSetting("compactHeadings", true);
+    assert.equal(headingPadding(open("# A\na", [headings])), "0px");
+    await plugin.setSetting("compactHeadings", false);
+    assert.equal(headingPadding(open("# A\na", [headings])), "16px", "after turning it off");
+  } finally {
+    style.remove();
+  }
+});
+
+// 1-based numbers of the lines compact headings hides.
+function hiddenBlanks(view) {
+  return [...view.contentDOM.querySelectorAll(".cm-line")]
+    .map((el, i) => (el.classList.contains("evil-org-hidden-blank") ? i + 1 : 0)).filter(Boolean);
+}
+
+test("compact headings hides blank lines between headings, not next to text or the cursor", async () => {
+  await plugin.setSetting("compactHeadings", true);
+  try {
+    const v = open("# A\n\n## B\n\n\n### C\n\nc\n\n## D\n```\n\n```");
+    gotoLine(v, 8);
+    assert.deepEqual(hiddenBlanks(v), [2, 4, 5]);
+    gotoLine(v, 4);
+    assert.deepEqual(hiddenBlanks(v), [2, 5]);
+  } finally {
+    await plugin.setSetting("compactHeadings", false);
+  }
+  assert.deepEqual(hiddenBlanks(open("# A\n\n## B")), []);
+});
+
+test("compact headings hides a long run of blank lines between headings, and follows edits", async () => {
+  await plugin.setSetting("compactHeadings", true);
+  try {
+    const v = open("# A\n" + "\n".repeat(30) + "# B\nb");
+    gotoLine(v, 33);
+    const run = Array.from({ length: 30 }, (_, i) => i + 2);
+    assert.deepEqual(hiddenBlanks(v), run);
+    v.dispatch({ changes: { from: v.state.doc.line(32).from, insert: "a\n" } });
+    assert.deepEqual(hiddenBlanks(v), []);
+  } finally {
+    await plugin.setSetting("compactHeadings", false);
+  }
+});
+
+test("uniform heading size gives headings the size of body text, and only while on", async () => {
+  // Obsidian's own rules, and the class its markdown mode gives a heading line.
+  const style = document.createElement("style");
+  style.textContent = ".cm-content { font-size: 16px; } .cm-line.HyperMD-header { font-size: 26px; }";
+  document.head.appendChild(style);
+  const heading = Decoration.line({ class: "HyperMD-header" });
+  const headings = EditorView.decorations.of(Decoration.set([heading.range(0)]));
+  const size = (view) => getComputedStyle(view.contentDOM.querySelector(".cm-line.HyperMD-header")).fontSize;
+  try {
+    assert.equal(size(open("# A\na", [headings])), "26px");
+    await plugin.setSetting("uniformHeadings", true);
+    assert.equal(size(open("# A\na", [headings])), "16px");
+    await plugin.setSetting("uniformHeadings", false);
+    assert.equal(size(open("# A\na", [headings])), "26px", "after turning it off");
+  } finally {
+    style.remove();
+  }
+});
+
+test("hide heading fold arrows hides the arrows of headings only, and only while on", async () => {
+  // Obsidian's fold arrow: a widget at the start of a heading or list item.
+  class Arrow extends WidgetType {
+    toDOM() {
+      const el = document.createElement("span");
+      el.className = "cm-fold-indicator";
+      return el;
+    }
+  }
+  const arrow = Decoration.widget({ widget: new Arrow() });
+  const heading = Decoration.line({ class: "HyperMD-header" });
+  const marks = EditorView.decorations.of(Decoration.set([heading.range(0), arrow.range(0), arrow.range(4)]));
+  const shown = (view) => [...view.contentDOM.querySelectorAll(".cm-fold-indicator")]
+    .map((el) => getComputedStyle(el).display !== "none");
+  assert.deepEqual(shown(open("# A\n- a", [marks])), [true, true]);
+  await plugin.setSetting("hideFoldArrows", true);
+  try {
+    assert.deepEqual(shown(open("# A\n- a", [marks])), [false, true]);
+  } finally {
+    await plugin.setSetting("hideFoldArrows", false);
+  }
+  assert.deepEqual(shown(open("# A\n- a", [marks])), [true, true]);
+});
+
 // --- o / O ---------------------------------------------------------------------
 
 // Insert mode keys are the browser's, not vim's: type text as an edit.
@@ -1965,8 +2201,20 @@ const runCommand = (id, view) => plugin.commands.find((c) => c.id === id).editor
 test("the commands keep their ids", () => {
   assert.deepEqual(plugin.commands.map((c) => c.id), [
     "cycle-local", "cycle-global", "move-subtree-down", "move-subtree-up", "insert-heading", "insert-subheading",
-    "up-heading",
+    "up-heading", "toggle-indent",
   ]);
+});
+
+test("toggle-indent works while the settings are still loading", async () => {
+  let resolve;
+  const slow = new PluginClass(app);
+  slow.loadData = () => new Promise((r) => (resolve = r));
+  const loaded = slow.onload();
+  slow.commands.find((c) => c.id === "toggle-indent").callback();
+  assert.equal(slow.settings.indent, true);
+  resolve(null);
+  await loaded;
+  slow.onunload();
 });
 
 test("go to heading moves to the line's heading, then to its parent", async () => {

@@ -1,8 +1,8 @@
 "use strict";
 
-const { Plugin, MarkdownView } = require("obsidian");
+const { Plugin, MarkdownView, PluginSettingTab, Setting, editorLivePreviewField } = require("obsidian");
 const { Prec, EditorState, EditorSelection, ChangeSet } = require("@codemirror/state");
-const { keymap, EditorView } = require("@codemirror/view");
+const { keymap, EditorView, ViewPlugin, Decoration, WidgetType } = require("@codemirror/view");
 const { invertedEffects } = require("@codemirror/commands");
 const { foldable, foldService, foldedRanges, foldEffect, unfoldEffect, indentUnit } = require("@codemirror/language");
 
@@ -1413,6 +1413,278 @@ function insertHeading(view, deeper) {
   if (Vim && normalMode(view)) Vim.handleKey(view.cm, "A", "user");
 }
 
+// org-indent-mode: each line is indented by its depth in the outline, in
+// display only. A heading of level L goes in L - 1 steps and the lines under
+// it L steps, so a heading starts where its parent's text does, as org's star
+// does. Text before the first heading isn't indented. The step is the CSS
+// variable --evil-org-indent, 1.5 editor font sizes unless a snippet sets it.
+// The margin goes outside Obsidian's own padding, so list items keep their
+// hanging indent, and wrapped lines line up with the first. It is !important
+// because Obsidian zeroes the margin of every line with !important. Like
+// scanLines, the depths are cached per doc.
+const depthCache = new WeakMap();
+
+function indentDepths(doc) {
+  let depths = depthCache.get(doc);
+  if (depths) return depths;
+  const levels = headingLevels(doc);
+  depths = new Uint8Array(levels.length);
+  let level = 0;
+  for (let n = 1; n < levels.length; n++) {
+    if (levels[n]) level = levels[n];
+    depths[n] = levels[n] ? level - 1 : level;
+  }
+  depthCache.set(doc, depths);
+  return depths;
+}
+
+const INDENT_STEP = "var(--evil-org-indent, calc(1.5 * var(--font-text-size, 16px)))";
+
+const indentLines = Array.from({ length: MAX_LEVEL + 1 }, (_, d) => Decoration.line({
+  class: "evil-org-indent",
+  attributes: { style: `margin-inline-start: calc(${d} * ${INDENT_STEP}) !important` },
+}));
+
+// org-bullets: in Live Preview, where Obsidian hides a heading's `#`s, a
+// glyph for its level takes their place, one step wide, so the heading's text
+// lines up with its body as in org. It is drawn at the size of body text, to
+// fit in the step, and goes after the hidden `#`s, so that Obsidian's fold
+// arrow at the start of the line doesn't cover it. On a line the selection
+// touches, Obsidian shows the `#`s, and the glyph goes away.
+const BULLETS = ["◉", "○", "✸", "✿"];
+
+class BulletWidget extends WidgetType {
+  constructor(level) {
+    super();
+    this.level = level;
+  }
+
+  eq(other) {
+    return other.level === this.level;
+  }
+
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "evil-org-bullet";
+    span.textContent = BULLETS[(this.level - 1) % BULLETS.length];
+    span.style.cssText = `display: inline-block; width: ${INDENT_STEP}; text-indent: 0; font-size: var(--font-text-size, 16px);`;
+    return span;
+  }
+}
+
+const bullets = Array.from({ length: MAX_LEVEL + 1 }, (_, level) =>
+  Decoration.widget({ widget: new BulletWidget(level), side: -1 }));
+
+// Obsidian's flag for Live Preview, absent outside Obsidian (and in tests
+// that don't add it): then the editor counts as Source mode.
+function livePreview(state) {
+  return !!(editorLivePreviewField && state.field(editorLivePreviewField, false));
+}
+
+function touchesSelection(state, line) {
+  return state.selection.ranges.some((r) => r.from <= line.to && r.to >= line.from);
+}
+
+// The lines of the visible ranges, each once: two ranges share a line when a
+// fold starts and ends inside it.
+function visibleLines(view) {
+  const doc = view.state.doc;
+  const lines = [];
+  for (const { from, to } of view.visibleRanges) {
+    for (let pos = from; pos <= to; ) {
+      const line = doc.lineAt(pos);
+      if (!lines.length || lines[lines.length - 1].number < line.number) lines.push(line);
+      pos = line.to + 1;
+    }
+  }
+  return lines;
+}
+
+function indentDecorations(view) {
+  const state = view.state;
+  const depths = indentDepths(state.doc);
+  const levels = headingLevels(state.doc);
+  const preview = livePreview(state);
+  const out = [];
+  for (const line of visibleLines(view)) {
+    if (depths[line.number]) out.push(indentLines[depths[line.number]].range(line.from));
+    const level = levels[line.number];
+    if (level && preview && !touchesSelection(state, line)) out.push(bullets[level].range(line.from + line.text.match(/^#+\s*/)[0].length));
+  }
+  return Decoration.set(out, true);
+}
+
+// Live Preview draws tables, callouts and embeds as block widgets, not lines,
+// so the line decorations don't reach them. Their own element takes the
+// indent of the line where they start. Obsidian gives a table a margin of
+// its own, which the indent goes on top of. CodeMirror ignores changes made
+// inside a widget, so this doesn't disturb the editor.
+function indentBlocks(view) {
+  const doc = view.state.doc;
+  const depths = indentDepths(doc);
+  for (const el of view.contentDOM.children) {
+    if (!el.classList.contains("cm-embed-block")) continue;
+    let pos;
+    try {
+      pos = view.posAtDOM(el);
+    } catch {
+      continue;
+    }
+    const depth = pos <= doc.length ? depths[doc.lineAt(pos).number] : 0;
+    const base = el.classList.contains("cm-table-widget") ? " - var(--size-4-4)" : "";
+    const margin = depth ? `calc(${depth} * ${INDENT_STEP}${base})` : "";
+    const priority = depth ? "important" : "";
+    // This runs on every geometry change; write only what differs, since
+    // each write is a style mutation.
+    if (el.style.getPropertyValue("margin-inline-start") === margin &&
+        el.style.getPropertyPriority("margin-inline-start") === priority) continue;
+    if (depth) el.style.setProperty("margin-inline-start", margin, priority);
+    else el.style.removeProperty("margin-inline-start");
+  }
+}
+
+function unindentBlocks(view) {
+  for (const el of view.contentDOM.children) {
+    if (el.classList.contains("cm-embed-block")) el.style.removeProperty("margin-inline-start");
+  }
+}
+
+const indentMode = ViewPlugin.fromClass(class {
+  constructor(view) {
+    this.view = view;
+    this.decorations = indentDecorations(view);
+    // A measure already queued still runs after destroy; it mustn't
+    // indent the widgets again.
+    this.measure = { read: () => null, write: () => this.destroyed || indentBlocks(view) };
+    view.requestMeasure(this.measure);
+  }
+
+  update(update) {
+    const preview = livePreview(update.state) !== livePreview(update.startState);
+    if (update.docChanged || update.viewportChanged || update.selectionSet || preview) {
+      this.decorations = indentDecorations(update.view);
+    }
+    // The widgets are drawn after this, so they're indented in the measure
+    // phase that follows.
+    if (update.docChanged || update.viewportChanged || update.geometryChanged || preview) {
+      update.view.requestMeasure(this.measure);
+    }
+  }
+
+  // Turning the mode off destroys the plugin; the widgets stay.
+  destroy() {
+    this.destroyed = true;
+    unindentBlocks(this.view);
+  }
+}, { decorations: (p) => p.decorations });
+
+// Hide heading fold arrows: org shows none, and with indent mode the bullets
+// mark the headings; a folded heading still ends in Obsidian's line count.
+// This and the settings' other styles are themes, not base themes: a
+// theme's rules hold only in editors that have it, while a base theme's stay
+// in force once mounted, so turning the setting off wouldn't undo them.
+const hideFoldArrows = EditorView.theme({
+  "& .HyperMD-header .cm-fold-indicator": { display: "none !important" },
+});
+
+// Compact headings: without the space Obsidian puts above each heading, and
+// without the blank lines between one heading and the next, the headings of
+// an outline sit on consecutive lines, as in org. Blank lines next to body
+// text stay. A blank line the selection touches shows, so the cursor on it
+// can be seen. Which blank lines sit between headings is worked out once per
+// doc, cached like scanLines: a blank line outside code whose nearest
+// non-blank lines above and below are both headings.
+const blankCache = new WeakMap();
+
+function compactableBlanks(doc) {
+  let blanks = blankCache.get(doc);
+  if (blanks) return blanks;
+  const { levels, code } = scanLines(doc);
+  blanks = new Uint8Array(doc.lines + 1);
+  let above = 0;
+  for (let n = 1; n <= doc.lines; n++) {
+    if (isBlank(doc.line(n).text)) continue;
+    if (levels[above] && levels[n]) for (let b = above + 1; b < n; b++) blanks[b] = code[b] ? 0 : 1;
+    above = n;
+  }
+  blankCache.set(doc, blanks);
+  return blanks;
+}
+
+function compactBlanks(view) {
+  const state = view.state;
+  const blanks = compactableBlanks(state.doc);
+  const out = [];
+  for (const line of visibleLines(view)) {
+    if (blanks[line.number] && !touchesSelection(state, line)) out.push(hiddenBlank.range(line.from));
+  }
+  return Decoration.set(out);
+}
+
+const hiddenBlank = Decoration.line({ class: "evil-org-hidden-blank" });
+
+const compactHeadings = [
+  EditorView.theme({
+    "& .cm-line.HyperMD-header": { paddingTop: "0 !important" },
+    "& .cm-line.evil-org-hidden-blank": { height: "0", padding: "0 !important", overflow: "hidden" },
+  }),
+  ViewPlugin.fromClass(class {
+    constructor(view) {
+      this.decorations = compactBlanks(view);
+    }
+
+    update(update) {
+      if (update.docChanged || update.viewportChanged || update.selectionSet) {
+        this.decorations = compactBlanks(update.view);
+      }
+    }
+  }, { decorations: (p) => p.decorations }),
+];
+
+// Uniform heading size: every heading at the size and line height of body
+// text, as in org, where only the color and weight set a headline apart.
+// The text in a heading line inherits the line's size.
+const uniformHeadings = EditorView.theme({
+  "& .cm-line.HyperMD-header": { fontSize: "inherit !important", lineHeight: "var(--line-height-normal) !important" },
+});
+
+const DEFAULT_SETTINGS = { indent: false, compactHeadings: false, uniformHeadings: false, hideFoldArrows: false };
+
+class EvilOrgSettingTab extends PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  display() {
+    this.containerEl.empty();
+    new Setting(this.containerEl)
+      .setName("Indent mode")
+      .setDesc("Indent the text under each heading by its level, in display only, as org-indent-mode does.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.indent)
+        .onChange((on) => this.plugin.setSetting("indent", on)));
+    new Setting(this.containerEl)
+      .setName("Compact headings")
+      .setDesc("Remove the space above headings in the editor, and hide the blank lines between one heading and the next, so that the headings of an outline are on consecutive lines, as in org-mode.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.compactHeadings)
+        .onChange((on) => this.plugin.setSetting("compactHeadings", on)));
+    new Setting(this.containerEl)
+      .setName("Uniform heading size")
+      .setDesc("Show all headings in the editor at the font size of body text, as in org-mode.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.uniformHeadings)
+        .onChange((on) => this.plugin.setSetting("uniformHeadings", on)));
+    new Setting(this.containerEl)
+      .setName("Hide heading fold arrows")
+      .setDesc("Hide the fold arrows of headings in the editor, as org-mode shows none. Tab and Shift-Tab still fold. List items keep their arrows.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.hideFoldArrows)
+        .onChange((on) => this.plugin.setSetting("hideFoldArrows", on)));
+  }
+}
+
 // The letters of the Alt keys handleAltMove catches, by key code, for when
 // the key isn't a letter (macOS Option-j is `∆`).
 const ALT_CODES = { KeyJ: "j", KeyK: "k" };
@@ -1556,6 +1828,23 @@ module.exports = class EvilOrgPlugin extends Plugin {
     Vim.handleKey(view.cm, `<A-${letter}>`, "user");
   }
 
+  // Change a setting in every editor, and keep the choice.
+  async setSetting(key, value) {
+    this.settings[key] = value;
+    this.applySettings();
+    await this.saveData(this.settings);
+  }
+
+  // The editor extensions the settings turn on.
+  applySettings() {
+    this.settingExtensions.length = 0;
+    if (this.settings.indent) this.settingExtensions.push(indentMode);
+    if (this.settings.compactHeadings) this.settingExtensions.push(...compactHeadings);
+    if (this.settings.uniformHeadings) this.settingExtensions.push(uniformHeadings);
+    if (this.settings.hideFoldArrows) this.settingExtensions.push(hideFoldArrows);
+    this.app.workspace.updateOptions();
+  }
+
   onunload() {
     for (const restore of (this.vimRestorers || []).reverse()) restore();
     this.vimRestorers = [];
@@ -1620,5 +1909,20 @@ module.exports = class EvilOrgPlugin extends Plugin {
         },
       });
     }
+    this.addCommand({
+      id: "toggle-indent",
+      name: "Toggle indent mode (org-indent-mode)",
+      callback: () => this.setSetting("indent", !this.settings.indent),
+    });
+    // Filled by applySettings, after the settings load: the editor extensions
+    // are registered first so that editors opened meanwhile get the vim keys.
+    this.settingExtensions = [];
+    this.registerEditorExtension(this.settingExtensions);
+    // The defaults until the saved settings load, for the toggle-indent
+    // command and the settings tab, which may be used meanwhile.
+    this.settings = Object.assign({}, DEFAULT_SETTINGS);
+    this.addSettingTab(new EvilOrgSettingTab(this.app, this));
+    Object.assign(this.settings, await this.loadData());
+    this.applySettings();
   }
 };

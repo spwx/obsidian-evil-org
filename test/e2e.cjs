@@ -218,6 +218,25 @@ test("Tab on an empty heading does nothing", async () => {
   assert.deepEqual(foldedLines(v), []);
 });
 
+// Obsidian's editor has no code block folds of its own, unlike the markdown
+// mode here, so check the plugin's range without it.
+test("Tab on a code fence folds and unfolds the block", async () => {
+  const doc = "x\n```js\na\n\nb\n```\ny\n  ~~~\n  c\n---";
+  const state = EditorState.create({ doc, extensions: [plugin.extensions] });
+  const range = (n) => foldable(state, state.doc.line(n).from, state.doc.line(n).to);
+  assert.deepEqual(range(2), { from: state.doc.line(2).to, to: state.doc.line(6).to });
+  assert.deepEqual(range(8), { from: state.doc.line(8).to, to: state.doc.length });
+  for (const n of [1, 3, 6, 7]) assert.equal(range(n), null, `line ${n}`);
+  assert.equal(foldable(EditorState.create({ doc: "---\na: 1\n---\nx", extensions: [plugin.extensions] }), 0, 3), null);
+
+  const v = open(doc);
+  gotoLine(v, 2);
+  await keys(v, "<Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 7, 8, 9, 10]);
+  await keys(v, "<Tab>");
+  assert.deepEqual(visibleLines(v), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+});
+
 test("Tab leaves folded list items in the subtree folded", async () => {
   const v = open("# A\n- x\n  - y\n# B\nb");
   fold(v, 2);

@@ -409,6 +409,20 @@ const headingFolds = Prec.highest(foldService.of((state, from, to) => {
   return end > to ? { from: to, to: end } : null;
 }));
 
+// A fenced code block's fold, as CodeMirror's markdown mode gives it: from the
+// end of the opening fence to the end of the block, its closing fence
+// included. Obsidian's editor has none, so Tab on a fence would do nothing.
+// Front matter is left to Obsidian's properties.
+const codeBlockFolds = foldService.of((state, from, to) => {
+  const doc = state.doc;
+  const n = doc.lineAt(from).number;
+  if (!scanLines(doc).code[n] || doc.line(n).text === "---") return null;
+  const block = scanLines(doc).blocks.find((b) => b.first === n);
+  if (!block || block.last === n) return null;
+  const end = doc.line(block.last).to;
+  return end > to ? { from: to, to: end } : null;
+});
+
 // Fold range for a heading's section: CodeMirror's (Obsidian's) own range,
 // or, if that isn't available yet for freshly inserted text, the same range
 // computed directly: to the last line before a heading of equal or higher level.
@@ -1876,6 +1890,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
       EditorState.transactionFilter.of((tr) => keepSelectedFoldsClosed(tr, this.app)),
       invertedEffects.of(deletedFolds),
       headingFolds,
+      codeBlockFolds,
       EditorView.updateListener.of((update) => {
         // An editor that opened without a leaf change, as in a pop-out or an
         // embed, may bring an adapter class not yet patched. Only while the

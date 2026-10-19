@@ -1,162 +1,296 @@
 # Evil Org
 
-Evil Org adds org-mode headline editing to the Vim mode of Obsidian. It uses the same concepts as Emacs [evil-org-mode](https://github.com/Somelauw/evil-org-mode).
+Evil Org adds org-mode outline keys to the Vim mode of Obsidian. The keys operate as in the Emacs package [evil-org-mode](https://github.com/Somelauw/evil-org-mode).
 
-The plugin uses Markdown headings as org headlines. The `Tab` key changes the fold state of a heading, as in org-mode. When a heading is folded, the plugin counts it as one line. Vim commands then move, copy, promote, and demote the full subtree.
+The plugin uses Markdown headings as org-mode headlines. A subtree is a heading and all of the lines under it, to the next heading of the same or a higher level. The plugin counts a folded heading as one line. Thus, Vim commands move, copy, and delete the full subtree.
 
 ## Requirements
 
-The plugin is primarily a set of Vim keys. You must set **Settings → Editor → Vim key bindings** to on.
+Set **Settings → Editor → Vim key bindings** to on.
 
-The keys in the table that follows operate only in Vim normal mode and Vim visual mode. They do not change insert mode or usual editing. The [commands](#commands) and [indent mode](#indent-mode) are different. They operate in all modes, with or without Vim.
+The [keys](#keys) operate only in Vim normal mode and Vim visual mode. They do not change insert mode. The [commands](#commands) and [indent mode](#indent-mode) operate in all modes, also when Vim mode is off.
 
 ## Keys
 
-| Key | Function |
-| --- | --- |
-| `Tab` | Changes the fold state of the heading at the cursor, as `TAB` (`org-cycle`) does in org-mode. On a folded heading, it shows the text of the heading and its subheadings, folded (children). If the heading has no subheadings, it shows all of the subtree. When you push `Tab` again immediately after children, it shows all of the subtree (subtree). At all other times, it folds the subtree (folded). Thus, the sequence is folded → children → subtree → folded. Folded list items and code blocks in the subtree stay folded. On a block that is not a heading, it opens or closes the fold of that block. |
-| `Shift-Tab` | Changes the fold state of all of the note, as `S-TAB` (`org-global-cycle`) does in org-mode. It shows the overview: the first heading, and the headings after it that are not deeper, with all of their text folded. When you push `Shift-Tab` again immediately after the overview, it shows the contents: all headings, with only the text of each heading folded. When you push it again immediately after the contents, it shows all of the note. At all other times, it shows the overview. Thus, the sequence is overview → contents → show all → overview. Text before the first heading does not change. If the cursor is in text that becomes folded, the cursor goes to the visible line above it. |
-| `V` | When you select a folded heading, the selection includes all of its subtree. |
-| `dd`, `yy`, `cc`, `3dd`, … | The plugin counts a folded heading as one line. Thus, these commands operate on all of the subtree. |
-| `u` | When you undo a delete, the plugin restores the folded headings in their folded state. |
-| `p` / `P` | Puts a yanked subtree after or before a folded heading, not in it. Pasted subtrees stay folded (`org-yank-folded-subtrees` in org-mode). |
-| `>>` / `<<` | On a heading, these keys demote or promote the heading. They add or remove one `#`. They do not indent the line. If the heading is folded, all of the subtree changes level (`M-S-→` in org-mode). If the heading is open, only the heading changes level (`M-→` in org-mode). The level stays between 1 and 6. If a heading in the range would go past level 1 or level 6, no heading changes, as in org-mode. The plugin does not change body lines. On a list item, these keys indent or outdent the item with its body and sub-items (`M-S-→`/`M-S-←` in org-mode). `>>` puts the item under the item above it. The item gets the indent of the sub-items of that item. If that item has no sub-items, the indent is one tab if the lists of the note use tabs, or else spaces up to the text of that item. `<<` makes the item a sibling of its parent. On an item without a parent, `<<` does nothing. Folded items stay folded. In a numbered list, the plugin renumbers the items. |
-| `3>>`, `V>`, `.` | All headings in the range change level, also when the range starts on a body line. If the range starts on a list item, all items in the range move with their sub-items. You can repeat the change with `.`. One `u` undoes all of the change. |
-| `Alt-j` / `Alt-k` | On a heading, these keys exchange its subtree with the next or previous sibling (`M-↓`/`M-↑` in org-mode). The subtree does not move out of its parent. Blank lines between subtrees do not move. Folded subtrees stay folded. With a count, the subtree moves past that number of siblings. `.` repeats the move, and one `u` undoes it. In a list, these keys exchange the item at the cursor, with its body and sub-items, with the next or previous item (`M-↓`/`M-↑` in org-mode). The item does not move out of its parent item or its list. Blank lines, folds, counts, `.`, and `u` operate as for subtrees. In a numbered list, the plugin renumbers the items. On other lines, these keys move the line. They move over a folded heading as one line. On macOS, the Alt key is the Option key. |
-| `o` / `O` | In a list, these keys open a new item below or above the item at the cursor (`evil-org-open-below`/`-above`). The new item has the same indent and bullet. In a numbered list, it gets the next number, and the plugin renumbers the items after it. If the item has a checkbox, the new item gets an empty checkbox. `o` opens the new item after the sub-items of the item, as in org-mode. On a heading, `o` and `O` open a usual line. To open a new heading, use the **Insert heading** command. On a folded heading, item, or block, `o` opens the line below the fold, not in it. A count (`3o`) and `.` open more items. |
-| `ar` / `ir` | Text objects for a subtree (evil-org `ar`/`ir`). They operate on folded and open subtrees. `ar` is the subtree that contains the cursor, plus the blank lines after it. `ir` is the body of that subtree. It does not include the heading or the blank lines around it. You can use them with all operators (`dar`, `yar`, `cir`, `>ar`) and in visual mode. With a count (`d2ar`), or when you type `ar` again in visual mode, the selection includes the parent subtree. On a Markdown table row, `ar` is the row and `ir` is the text between its first and last `|`, as in Vim Motions. There, a count of 2 or typing `ar` again in visual mode selects the subtree. |
-| `ae` / `ie` | Text objects for the Markdown element at the cursor (evil-org `ae`/`ie`). The element can be a list item with its sub-items, a list, a fenced code block, front matter, a block quote or callout, a paragraph, or a heading line. A paragraph in the body of a list item is an element in that item. `ae` is the element, plus the blank lines after it. On a blank line, `ae` is the element above it. `ie` is the inside of the element. For a list item or a heading, it is the text after the bullet, number, checkbox, or `#` characters. For a code block or front matter, it is the lines between the fences. For a callout, it is the lines after the title line. For other elements, it is the lines without the blank lines after them. You can use them with all operators (`dae`, `yae`, `cie`, `>ae`) and in visual mode. With a count (`d2ae`), or when you type `ae` again in visual mode, the selection includes the next element that contains it: from a paragraph in an item, the item; from a sub-item, its list, then the parent item, then the subtrees around it, as with `ar`. A folded heading or item counts as one line, so `dae` on a folded heading deletes all of the subtree. |
-| `gh` | Moves the cursor to the heading of the line it is on (evil-org `gh`, `org-up-element`). On a heading, it moves to the parent heading, so typing `gh` again goes up the outline. With a count (`2gh`), it goes up that many levels. On a top-level heading, or before the first heading, the cursor does not move. It is linewise with operators (`dgh` deletes from the heading to the cursor line), and `Ctrl-o` goes back. |
+In fenced code blocks and front matter, a line that starts with `#` is not a heading.
 
-If a range has no headings and does not start on a list item, `>` and `<` indent its lines as in standard Vim. In fenced code blocks and front matter, a line that starts with `#` is not a heading.
+### `Tab`: Fold a heading
+
+`Tab` changes the fold state of the heading at the cursor (`org-cycle`). The fold states are:
+
+- **Folded**: The editor shows only the heading.
+- **Children**: The editor shows the text of the heading and its subheadings. The subheadings stay folded.
+- **Subtree**: The editor shows all of the subtree.
+
+`Tab` changes the state as follows:
+
+1. On a folded heading, `Tab` shows the children. If the heading has no subheadings, `Tab` shows the subtree.
+2. When you push `Tab` again immediately after the children, `Tab` shows the subtree.
+3. At all other times, `Tab` folds the subtree.
+
+Thus, the sequence is folded → children → subtree → folded.
+
+Folded list items and code blocks in the subtree stay folded. On a block that is not a heading, such as a list item or the opening fence of a code block, `Tab` opens or closes the fold of that block.
+
+### `Shift-Tab`: Fold the note
+
+`Shift-Tab` changes the fold state of all of the note (`org-global-cycle`). The fold states are:
+
+- **Overview**: The editor shows the first heading and the headings after it that are not deeper. All of their text is folded.
+- **Contents**: The editor shows all headings. Only the body text of each heading is folded.
+- **Show all**: The editor shows all of the note.
+
+`Shift-Tab` changes the state as follows:
+
+1. When you push `Shift-Tab` immediately after the overview, `Shift-Tab` shows the contents.
+2. When you push `Shift-Tab` immediately after the contents, `Shift-Tab` shows all of the note.
+3. At all other times, `Shift-Tab` shows the overview.
+
+Text before the first heading does not change. If the cursor is in text that becomes folded, the cursor moves to the visible line above it.
+
+### Line commands: `V`, `dd`, `yy`, `cc`, `u`, `p`, `P`
+
+- `V`: When you select a folded heading, the selection includes all of its subtree.
+- `dd`, `yy`, `cc`, `3dd`: The plugin counts a folded heading as one line. Thus, these commands operate on all of the subtree.
+- `u`: When you undo a delete, the deleted headings come back folded.
+- `p` / `P`: These keys put a yanked subtree after or before a folded heading, not in it. Pasted subtrees stay folded (`org-yank-folded-subtrees`).
+
+### `>>` / `<<`: Change the level of a heading or list item
+
+On a heading:
+
+- `>>` adds one `#` to the heading. `<<` removes one `#`. These keys do not indent the line.
+- If the heading is folded, all headings in the subtree change level (`M-S-→` / `M-S-←`).
+- If the heading is open, only that heading changes level (`M-→` / `M-←`).
+- The level stays between 1 and 6. If one heading in the range cannot change level, no heading changes.
+- Body lines do not change.
+
+On a list item:
+
+- These keys indent or outdent the item with its body and sub-items (`M-S-→` / `M-S-←`).
+- `>>` makes the item a sub-item of the item above it. The item gets the indent of the sub-items of that item.
+- If the item above has no sub-items, the indent is one tab when the lists of the note use tabs. Else, the indent is spaces up to the text of the item above.
+- `<<` makes the item a sibling of its parent. On an item that has no parent, `<<` does nothing.
+- Folded items stay folded.
+- In a numbered list, the plugin renumbers the items.
+
+On a range (`3>>`, `V>`):
+
+- All headings in the range change level, also when the range starts on a body line.
+- If the range starts on a list item, all items in the range move with their sub-items.
+- If the range has no headings and does not start on a list item, `>` and `<` indent the lines as in standard Vim.
+
+`.` repeats the change. One `u` undoes all of the change.
+
+### `Alt-j` / `Alt-k`: Move a subtree, list item, or line
+
+On macOS, the Alt key is the Option key.
+
+On a heading, these keys move the subtree down or up, past the next or previous sibling (`M-↓` / `M-↑`):
+
+- The subtree does not move out of its parent.
+- Blank lines between subtrees do not move.
+- Folded subtrees stay folded.
+- With a count, the subtree moves past that number of siblings.
+- `.` repeats the move. One `u` undoes it.
+
+In a list, these keys move the item at the cursor, with its body and sub-items, past the next or previous item (`M-↓` / `M-↑`):
+
+- The item does not move out of its parent item or its list.
+- Blank lines, folds, counts, `.`, and `u` operate as for subtrees.
+- In a numbered list, the plugin renumbers the items.
+
+On other lines, these keys move the line. A folded heading counts as one line.
+
+### `o` / `O`: Open a list item
+
+In a list, these keys open a new item below or above the item at the cursor (`evil-org-open-below` / `evil-org-open-above`):
+
+- The new item has the same indent and bullet.
+- In a numbered list, the new item gets the next number. The plugin renumbers the items after it.
+- If the item has a checkbox, the new item gets an empty checkbox.
+- `o` opens the new item after the sub-items of the item.
+- A count (`3o`) and `.` open more items.
+
+On a heading, `o` and `O` open a usual line. To open a new heading, use the **Insert heading** command.
+
+On a folded heading, item, or block, `o` opens the line below the fold.
+
+### `ar` / `ir`: Select a subtree
+
+These text objects select a subtree (evil-org `ar` / `ir`). They operate on folded and open subtrees.
+
+- `ar` is the subtree that contains the cursor, plus the blank lines after it.
+- `ir` is the body of that subtree. It does not include the heading or the blank lines around the body.
+- You can use them with all operators (`dar`, `yar`, `cir`, `>ar`) and in visual mode.
+- With a count (`d2ar`), the selection includes the parent subtree. When you type `ar` again in visual mode, the result is the same.
+
+On a Markdown table row:
+
+- `ar` is the row.
+- `ir` is the text between the first `|` and the last `|` of the row.
+- To select the subtree, use a count of 2, or type `ar` again in visual mode.
+
+### `ae` / `ie`: Select a Markdown element
+
+These text objects select the Markdown element at the cursor (evil-org `ae` / `ie`). The element can be one of these:
+
+- A list item with its sub-items
+- A list
+- A fenced code block
+- Front matter
+- A block quote or callout
+- A paragraph
+- A heading line
+
+A paragraph in the body of a list item is an element in that item.
+
+`ae` is the element, plus the blank lines after it. On a blank line, `ae` is the element above it.
+
+`ie` is the inside of the element:
+
+- List item or heading: the text after the bullet, number, checkbox, or `#` characters.
+- Code block or front matter: the lines between the fences.
+- Callout: the lines after the title line.
+- Other elements: the lines without the blank lines after them.
+
+You can use them with all operators (`dae`, `yae`, `cie`, `>ae`) and in visual mode.
+
+With a count (`d2ae`), the selection includes the next element that contains it. When you type `ae` again in visual mode, the result is the same. The sequence is:
+
+1. From a paragraph in an item: the item.
+2. From a sub-item: its list, then the parent item.
+3. After that: the subtrees around it, as with `ar`.
+
+A folded heading or item counts as one line. Thus, `dae` on a folded heading deletes all of the subtree.
+
+### `gh`: Go to the heading
+
+`gh` moves the cursor to the heading of the line (`org-up-element`).
+
+- On a heading, `gh` moves the cursor to the parent heading. Thus, each `gh` moves one level up the outline.
+- With a count (`2gh`), the cursor moves up that number of levels.
+- On a top-level heading, or before the first heading, the cursor does not move.
+- With an operator, `gh` is linewise. For example, `dgh` deletes the lines from the heading to the cursor line.
+- `Ctrl-o` moves the cursor back.
 
 ## Commands
 
-Eight actions are also Obsidian commands. You can set hotkeys for them in **Settings → Hotkeys**:
+These actions are also Obsidian commands:
 
-- **Cycle fold under cursor (TAB in org-mode)**: same function as `Tab`
-- **Cycle global fold overview (S-TAB in org-mode)**: same function as `Shift-Tab`
-- **Move subtree down (M-↓ in org-mode)**: same function as `Alt-j`. It moves the subtree, the list item, or the line at the cursor down.
-- **Move subtree up (M-↑ in org-mode)**: same function as `Alt-k`. It moves the subtree, the list item, or the line at the cursor up.
-- **Insert heading (M-RET in org-mode)**: opens a new heading after the subtree that contains the cursor. The new heading has the same level as the heading of that subtree. If the cursor is not under a heading, the new heading has level 1.
-- **Insert subheading**: opens a new heading at the end of the subtree that contains the cursor. The new heading has one more `#` than the heading of that subtree, to a maximum of 6.
-- **Go to heading of this line (org-up-element)**: same function as `gh`. It moves the cursor to the heading of the line it is on, or from a heading to its parent heading.
-- **Toggle indent mode (org-indent-mode)**: sets [indent mode](#indent-mode) to on or off.
+- **Cycle fold under cursor (TAB in org-mode)**: The same function as `Tab`.
+- **Cycle global fold overview (S-TAB in org-mode)**: The same function as `Shift-Tab`.
+- **Move subtree down (M-↓ in org-mode)**: The same function as `Alt-j`.
+- **Move subtree up (M-↑ in org-mode)**: The same function as `Alt-k`.
+- **Insert heading (M-RET in org-mode)**: Opens a new heading after the subtree that contains the cursor. The new heading has the same level as the heading of that subtree. If the cursor is not under a heading, the new heading has level 1.
+- **Insert subheading**: Opens a new heading at the end of the subtree that contains the cursor. The new heading has one more `#` than the heading of that subtree, to a maximum of 6.
+- **Go to heading of this line (org-up-element)**: The same function as `gh`.
+- **Toggle indent mode (org-indent-mode)**: Sets [indent mode](#indent-mode) to on or off.
 
-These commands do not have default hotkeys. You must set the hotkeys yourself. Different from the keys in the table, these commands also operate in insert mode and when Vim mode is off. In Vim normal mode, the insert commands go to insert mode.
+The commands have no default hotkeys. To set a hotkey, open **Settings → Hotkeys**.
 
-### Use Alt-Enter to insert a heading
+The commands operate in all modes, also when Vim mode is off. In Vim normal mode, the insert commands start insert mode.
 
-In org-mode, `M-RET` inserts a heading. To use `Alt-Enter` for **Insert heading**, do these steps:
+### Set `Alt-Enter` to insert a heading
+
+In Obsidian, `Alt-Enter` is the default hotkey of **Follow link under cursor**. To use `Alt-Enter` for **Insert heading**, do these steps:
 
 1. Open **Settings → Hotkeys**.
-2. Type "Follow link under cursor" in the search field. In Obsidian, `Alt-Enter` is the default hotkey of this command. Remove this hotkey. If you want to follow links from the keyboard, set a different hotkey for this command.
-3. Type "Insert heading" in the search field.
-4. Set the hotkey of **Insert heading (M-RET in org-mode)** to `Alt-Enter`.
+2. In the search field, type "Follow link under cursor".
+3. Remove the `Alt-Enter` hotkey from this command.
+4. In the search field, type "Insert heading".
+5. Set the hotkey of **Insert heading (M-RET in org-mode)** to `Alt-Enter`.
 
-If you do not remove the hotkey of **Follow link under cursor**, `Alt-Enter` does not insert a heading.
+NOTE: To follow links from the keyboard, set a different hotkey for **Follow link under cursor**.
 
-You cannot map `Alt-Enter` in a vimrc file. Obsidian gets its hotkeys before Vim does, so Vim does not get `Alt-Enter`.
+You cannot map `Alt-Enter` in a vimrc file. Obsidian gets its hotkeys before Vim does.
 
 ## Indent mode
 
-Indent mode indents the text of a note by the outline, as `org-indent-mode` does in org-mode. Obsidian does not have this function. The plugin does not change the text of the note. It changes only how the editor shows the lines.
+Indent mode indents the lines of a note by the outline (`org-indent-mode`). It changes only how the editor shows the lines. It does not change the text of the note.
 
-A heading of level 1 is not indented. A heading of level 2 is indented one step, a heading of level 3 two steps, and so on. The lines under a heading are indented one step more than the heading. Thus, a heading starts at the same position as the text of its parent, as the star of a heading does in org-mode. Text before the first heading is not indented. Wrapped lines align with the first line, and list items keep their indent. In Live Preview, tables, callouts, and embeds are indented with the text around them.
+- A heading of level 1 has no indent. A heading of level 2 has an indent of one step. A heading of level 3 has two steps, and so on.
+- The lines under a heading have one step more indent than the heading.
+- Text before the first heading has no indent.
+- Wrapped lines align with the first line.
+- List items keep their indent.
+- In Live Preview, tables, callouts, and embeds have the same indent as the text around them.
 
-In Live Preview, indent mode also shows a bullet in place of the `#` characters of a heading, as [org-bullets](https://github.com/sabof/org-bullets) does in org-mode. The bullet is `◉` for level 1, `○` for level 2, `✸` for level 3, and `✿` for level 4, then the sequence starts again. The bullet is one step wide, so the text of a heading aligns with the lines under it. When the cursor is on a heading, Obsidian shows the `#` characters, and the bullet goes away. Source mode does not show bullets.
+In Live Preview, indent mode shows a bullet in place of the `#` characters of a heading. The bullets are:
 
-To set indent mode to on or off, use the **Toggle indent mode (org-indent-mode)** command, or **Settings → Evil Org → Indent mode**. The setting applies to all notes and stays after you restart Obsidian. Indent mode operates with or without Vim.
+| Level | Bullet |
+| --- | --- |
+| 1 | `◉` |
+| 2 | `○` |
+| 3 | `✸` |
+| 4 | `✿` |
 
-One step is 1.5 times the font size of the editor. To change it, set the `--evil-org-indent` CSS variable in a [CSS snippet](https://help.obsidian.md/snippets). For example:
+At level 5, the sequence starts again. The bullet is one step wide. Thus, the text of a heading aligns with the lines under it. When the cursor is on a heading, the editor shows the `#` characters in place of the bullet. Source mode does not show bullets.
+
+To set indent mode to on or off, use one of these:
+
+- The **Toggle indent mode (org-indent-mode)** command
+- **Settings → Evil Org → Indent mode**
+
+The setting applies to all notes. It stays after you restart Obsidian.
+
+Indent mode operates only in the editor. It does not operate in reading view.
+
+One step is 1.5 times the font size of the editor. To change the step, set the `--evil-org-indent` CSS variable in a [CSS snippet](https://help.obsidian.md/snippets). For example:
 
 ```css
 .markdown-source-view { --evil-org-indent: 2ch; }
 ```
 
-Indent mode operates only in the editor, not in reading view.
-
 ### Compact headings
 
-Obsidian puts space above each heading. Thus, the headings of a folded outline are farther apart than lines of text. When you set **Settings → Evil Org → Compact headings** to on, the editor does not show this space or the blank lines between a heading and the next heading. Thus, the headings are on consecutive lines, as in org-mode. Blank lines before or after body text still show. When the cursor is on a hidden blank line, the line shows. The text of the note does not change. You can use this setting with or without indent mode.
+Set **Settings → Evil Org → Compact headings** to on. The editor then shows the headings on consecutive lines, as in org-mode:
+
+- The editor does not show the space above each heading.
+- The editor does not show blank lines between a heading and the next heading.
+- Blank lines before or after body text still show.
+- When the cursor is on a hidden blank line, the line shows.
+
+The text of the note does not change. You can use this setting with or without indent mode.
 
 ### Uniform heading size
 
-Obsidian shows headings in larger fonts than body text, and a higher level has a larger font. When you set **Settings → Evil Org → Uniform heading size** to on, the editor shows all headings at the font size and line height of body text, as in org-mode. Headings keep their color and weight. You can use this setting with or without indent mode.
+Set **Settings → Evil Org → Uniform heading size** to on. The editor then shows all headings at the font size and line height of body text, as in org-mode. Headings keep their color and weight. You can use this setting with or without indent mode.
 
 ### Hide heading fold arrows
 
-When you set **Settings → Evil Org → Hide heading fold arrows** to on, the editor does not show the fold arrows of headings, as org-mode shows none. With indent mode, the bullets mark the headings. To fold and unfold headings, use `Tab` and `Shift-Tab`. A folded heading still shows the number of lines in its fold. List items keep their fold arrows.
+Set **Settings → Evil Org → Hide heading fold arrows** to on. The editor then does not show the fold arrows of headings, as in org-mode.
+
+- To fold and unfold headings, use `Tab` and `Shift-Tab`.
+- A folded heading still shows the number of lines in its fold.
+- List items keep their fold arrows.
 
 ## Installation
 
-To install the plugin from Obsidian:
+To install the plugin from Obsidian, do these steps:
 
 1. Open **Settings → Community plugins → Browse**.
-2. Type "Evil Org" in the search field.
+2. In the search field, type "Evil Org".
 3. Select the plugin.
-4. Select **Install**, then select **Enable**.
+4. Select **Install**.
+5. Select **Enable**.
 
-To install the plugin manually:
+To install the plugin manually, do these steps:
 
 1. Download `main.js` and `manifest.json` from the [latest release](https://github.com/spwx/obsidian-evil-org/releases/latest).
 2. Put the two files in `<vault>/.obsidian/plugins/evil-org/`.
-3. Open **Settings → Community plugins** and set **Evil Org** to on.
+3. Open **Settings → Community plugins**.
+4. Set **Evil Org** to on.
 
-## How the plugin operates
+## Compatibility
 
-Obsidian does not have a public API for its Vim mode. For this reason, the plugin changes the Vim engine that Obsidian makes available at `window.CodeMirrorAdapter.Vim`. The plugin makes these changes:
+Obsidian does not have a public API for its Vim mode. Thus, the plugin uses interfaces that Obsidian does not document. An Obsidian update can stop the plugin. When you disable the plugin, Vim goes back to its standard behavior.
 
-- It changes the `expandToLine` motion so that the motion includes folded lines.
-- It wraps the `findPosV` method of the Vim adapter class that the editor uses (`window.CodeMirrorAdapter` in Obsidian, or the class of a Vim engine that another plugin, such as Vim Motions, bundles) so that `j` moves past a closed fold in one step. Without this change, the first `j` on a folded heading puts the cursor at the end of the heading.
-- It maps `o`, `O`, `p`, `P`, `d`, `>`, `<`, `<A-j>`, `<A-k>`, `ar`, `ir`, `ae`, `ie`, and `gh`. In visual mode, it also maps `x`, `X`, and `D`.
-- It gets `Alt-j` and `Alt-k` in Vim normal mode, in the main window and in pop-out windows, before the editor and Obsidian's hotkeys get them. Thus, in Vim normal mode, an Obsidian hotkey that you set to `Alt-j` or `Alt-k` does not operate. The plugin gets the keys by the letter that you type. If the key does not give a letter, the plugin uses the key code. On macOS, the Vim mode of Obsidian can lose the Alt modifier. For example, `Option-j` gives `∆`.
-- It adds a `Tab` and `Shift-Tab` key binding to the editor. The binding operates only in Vim normal mode.
-- It gives headings the same fold range as Obsidian: up to the next heading of the same or a higher level, including the blank lines before it. This range has priority over the fold ranges of other plugins. For example, Vim Motions ends a heading fold at the last line that is not blank, so a blank line shows under each folded heading.
-- It gets the CodeMirror 6 view from `editor.cm`.
-
-**Caution:** Obsidian does not document these interfaces. An Obsidian update can cause the plugin to stop operating. When you unload the plugin, Vim goes back to its standard behavior.
+In Vim normal mode, the plugin gets `Alt-j` and `Alt-k` before Obsidian does. Thus, an Obsidian hotkey on `Alt-j` or `Alt-k` does not operate in Vim normal mode.
 
 ## Development
 
-The source file is `main.js`. The command `npm run build` only does a syntax check of this file. The build does not change the file. Thus, the released file is identical to the file in the repository, byte for byte.
-
-The end-to-end tests run `main.js` in jsdom, with a real CodeMirror 6 editor and [codemirror-vim](https://github.com/replit/codemirror-vim). To run the tests, use these commands:
-
-```sh
-npm install
-npm test
-```
-
-To make a release, run the release script with the new version number. Do not put a `v` before the number.
-
-```sh
-npm run release -- 1.1.3          # test, change the version, commit, and tag
-npm run release -- 1.1.3 --push   # do the same steps, then push main and the tag
-```
-
-The script does these steps:
-
-1. It runs the build and the tests. If they fail, the script stops before it changes a file.
-2. It changes `version` in `manifest.json` to the new version.
-3. It adds the new version to `versions.json`, with the `minAppVersion` value from `manifest.json`. This value tells older Obsidian installations which build they can use.
-4. It makes a commit and a tag.
-
-The commit message opens in `$EDITOR`. The first line is `Bump to <version>`. Add a body that describes the changes. To keep only the first line, add `--no-edit`.
-
-The script stops if one of these conditions is true:
-
-- The working tree has changes that are not committed.
-- The current branch is not `main`.
-- `main` and `origin/main` have diverged.
-- The new version is not more recent than the current version.
-
-When you push the tag, the Release workflow starts. The workflow does these steps:
-
-1. It runs the tests.
-2. It compares the tag with the version in `manifest.json` and in `versions.json`.
-3. It makes attestations for `main.js` and `manifest.json`.
-4. It publishes the GitHub release.
+To change, build, test, or release the plugin, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## License
 

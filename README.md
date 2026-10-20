@@ -206,7 +206,7 @@ In a list, these keys move the item at the cursor, with its body and sub-items, 
 
 On other lines, these keys move the line. A folded heading counts as one line.
 
-### `o` / `O`: Open a list item
+### `o` / `O`: Open a list item or table row
 
 In a list, these keys open a new item below or above the item at the cursor (`evil-org-open-below` / `evil-org-open-above`):
 
@@ -215,6 +215,8 @@ In a list, these keys open a new item below or above the item at the cursor (`ev
 - If the item has a checkbox, the new item gets an empty checkbox.
 - `o` opens the new item after the sub-items of the item.
 - A count (`3o`) and `.` open more items.
+
+In a Markdown table, `o` and `O` insert an empty row below or above the row at the cursor, as `evil-org-open-below` / `evil-org-open-above` do in an org table. The cursor goes to the new row, in the same column, in insert mode, and the plugin aligns the table. In the header row and on the delimiter row, they insert the row below the delimiter row.
 
 On a heading, `o` and `O` open a usual line. To open a new heading, use the **Insert heading** command.
 

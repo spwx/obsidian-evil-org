@@ -1223,6 +1223,19 @@ function tableSwapRows(rows, at, to) {
   return { row: to, col: at.col };
 }
 
+// `o`/`O` on a table row (evil-org-open-below/above, which call
+// org-table-insert-row): an empty row below or above the cursor's, in the
+// cursor's column, aligning the table. As with insertRow, the row goes below
+// the header and its delimiter row. False outside a table.
+function tableOpenRow(view, after) {
+  const cell = tableCellAt(view.state.doc, view.state.selection.main.head);
+  if (!cell) return false;
+  const rows = tableModel(cell.table);
+  const row = Math.max(cell.row + (after ? 1 : 0), tableHeader(rows) + 1);
+  rows.splice(row, 0, emptyRow());
+  return replaceTable(view, cell.table, rows, { row, col: cell.col });
+}
+
 // Make a table edit (a key of TABLE_EDITS) `count` times at the cursor, or as
 // many times as it can be made, and align the table, in one undo step. False
 // outside a table, or if the edit can't be made at all.
@@ -1927,7 +1940,8 @@ function openLineChange(doc, target, after, text, above = 0, below = 0) {
   return { insert, newLine };
 }
 
-// `o`/`O` (evil-org-open-below/above). In a list item, open a new item after
+// `o`/`O` (evil-org-open-below/above). On a table row, insert an empty row
+// below or above it (see tableOpenRow). In a list item, open a new item after
 // the item and its sub-items, or before the item: same indent and bullet, the
 // next number (numbering the items after it in sequence from it), and an empty
 // checkbox if the item has one. On a heading, or in a code block or front
@@ -1938,6 +1952,10 @@ function openLineChange(doc, target, after, text, above = 0, below = 0) {
 function openLine(cm, args, vim) {
   const view = cm.cm6;
   if (!view) return this.newLineAndEnterInsertMode(cm, args, vim);
+  if (tableOpenRow(view, args.after)) {
+    const head = tableEditCursor(cm, cm.constructor.Pos);
+    return this.enterInsertMode(cm, { repeat: args.repeat, head }, vim);
+  }
   const state = view.state;
   const doc = state.doc;
   const folds = allFolds(state);

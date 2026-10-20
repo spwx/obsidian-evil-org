@@ -1860,6 +1860,43 @@ test("yy yanks a row as a line, and p and P paste it as a row and align the tabl
   assert.ok(text(v).endsWith("\n\ntext"));
 });
 
+test("o and O in a table insert an empty row below or above, in the cursor's column", async () => {
+  const v = open(TBL);
+  gotoCell(v, 4, "2");
+  await keys(v, "o");
+  assert.ok(insertMode(v));
+  assert.deepEqual(tableLines(v), [
+    "| a   |   b | c   |",
+    "| :-- | --: | --- |",
+    "| 1   |   2 | 3   |",
+    "|     |     |     |",
+    "| 4   |   5 | 6   |",
+  ]);
+  assert.deepEqual(cursorAt(v), [5, 8]);
+  type(v, "x");
+  await keys(v, "<Esc>");
+  gotoCell(v, 6, "6");
+  await keys(v, "O");
+  type(v, "y");
+  await keys(v, "<Esc>");
+  assert.deepEqual(tableLines(v).slice(3), ["|     |   x |     |", "|     |     | y    |", "| 4   |   5 | 6   |"]);
+  assert.ok(text(v).endsWith("\n\ntext"));
+  const w = open(TBL);
+  gotoLine(w, 5);
+  await keys(w, "o<Esc>u");
+  assert.equal(text(w), TBL);
+});
+
+test("o and O in the header or on the delimiter row insert below the delimiter row", async () => {
+  for (const [line, key] of [[2, "o"], [2, "O"], [3, "o"], [3, "O"]]) {
+    const v = open(TBL);
+    gotoLine(v, line);
+    await keys(v, key);
+    assert.deepEqual(tableLines(v).slice(2, 4), ["|     |     |     |", "| 1   |   2 | 3   |"], `${key} on line ${line}`);
+    assert.equal(v.state.doc.lineAt(v.state.selection.main.head).number, 4);
+  }
+});
+
 test("p and P in the header or on the delimiter row paste below the delimiter row", async () => {
   for (const [line, key] of [[2, "p"], [2, "P"], [3, "p"], [3, "P"]]) {
     const v = open(TBL);

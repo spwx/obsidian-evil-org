@@ -1,7 +1,7 @@
 "use strict";
 
 const { Plugin, MarkdownView, PluginSettingTab, Setting, editorLivePreviewField } = require("obsidian");
-const { Prec, EditorState, EditorSelection, ChangeSet } = require("@codemirror/state");
+const { Prec, EditorState, EditorSelection, ChangeSet, StateEffect, StateField } = require("@codemirror/state");
 const { keymap, EditorView, ViewPlugin, Decoration, WidgetType } = require("@codemirror/view");
 const { invertedEffects } = require("@codemirror/commands");
 const { foldable, foldService, foldedRanges, foldEffect, unfoldEffect, indentUnit } = require("@codemirror/language");
@@ -32,6 +32,12 @@ function busy(v, allowCount = false) {
 function normalMode(view, allowCount = false) {
   const v = getVimState(view);
   return !!v && !v.insertMode && !busy(v, allowCount);
+}
+
+// Insert mode, with vim.
+function insertMode(view) {
+  const v = getVimState(view);
+  return !!v && !!v.insertMode;
 }
 
 // Vim isn't in the middle of anything. Insert mode counts as idle, and so does
@@ -489,8 +495,12 @@ function afterVim(view, fn) {
 // copied, for unfolded text and for unload.
 const stockExpandToLine = (_cm, head, args) => new head.constructor(head.line + args.repeat - 1, Infinity);
 
+// On a table row a count stops at the table's last row, as one stops at the
+// end of the note: `5dd` deletes rows, not the text after the table.
 function foldAwareExpandToLine(cm, head, args) {
   const view = cm && cm.cm6;
+  const table = view && args.repeat > 1 ? tableAt(view.state.doc, head.line + 1) : null;
+  if (table) return new head.constructor(Math.min(head.line + args.repeat, table.last) - 1, Infinity);
   const folds = view ? allFolds(view.state) : [];
   if (folds.length === 0) return stockExpandToLine(cm, head, args);
   const doc = view.state.doc;
@@ -588,14 +598,21 @@ function operatorLines(range) {
 // behind; codemirror-vim does this only for a single line, not for a closed
 // fold, `3dd` or `Vd`. The cursor goes to the new last line's first non-blank,
 // or, if that line is in a closed fold, to the fold's heading so the fold stays
-// closed (CodeMirror opens a fold the cursor enters).
+// closed (CodeMirror opens a fold the cursor enters). In a table, line deletes
+// delete rows and a visual block blanks cells (see deleteTableRows and
+// deleteTableBlock).
 function orgDelete(Vim) {
   const stock = stockDelete(Vim);
-  return function (cm, args, ranges) {
+  return function (cm, args, ranges, oldAnchor) {
     const state = cm.cm6.state;
     const doc = state.doc;
     const { first, last } = operatorLines(ranges[0]);
-    if (!args.linewise || cm.state.vim.visualBlock || ranges.length > 1 || first === 1 || last < doc.lines) {
+    const vim = cm.state.vim;
+    const table = args.linewise && !vim.visualBlock && ranges.length === 1 && tableRowsDeleted(doc, first, last);
+    if (table) return deleteTableRows(Vim, cm, args, table, first, last, oldAnchor);
+    const block = vim.visualMode && vim.visualBlock && tableBlock(doc, vim.sel, args.linewise);
+    if (block) return deleteTableBlock(Vim, cm, args, block, oldAnchor);
+    if (!args.linewise || vim.visualBlock || ranges.length > 1 || first === 1 || last < doc.lines) {
       return stock(cm, args, ranges);
     }
     const prev = doc.line(first - 1); // the line before the deleted ones
@@ -607,9 +624,57 @@ function orgDelete(Vim) {
     Vim.getRegisterController().pushText(args.registerName, "delete", text, true, false);
     const cursor = new Pos(target.number - 1, firstNonBlank(target.text));
     // Leaving visual mode, vim first puts the cursor at the selection's head.
-    const vim = cm.state.vim;
     if (vim.visualMode) vim.sel.head = cursor;
     return cursor;
+  };
+}
+
+// orgDelete on rows of a table (see tableDeleteRows): the rows go to the
+// register linewise, as with any `dd`, so `p` puts them back as rows. Where
+// the rows can't be deleted, nothing changes and the cursor stays.
+function deleteTableRows(Vim, cm, args, table, first, last, oldAnchor) {
+  const view = cm.cm6;
+  const Pos = oldAnchor.constructor;
+  const at = tableCellAt(view.state.doc, cm.indexFromPos(oldAnchor));
+  const text = tableDeleteRows(view, table, first, last, at ? at.col : 0);
+  if (text === null) return oldAnchor;
+  Vim.getRegisterController().pushText(args.registerName, "delete", text, true, false);
+  return tableEditCursor(cm, Pos);
+}
+
+// orgDelete on a visual block in a table (see tableClearBlock): the cells go
+// to the register blockwise (see tableClip), so `p` puts them back.
+function deleteTableBlock(Vim, cm, args, block, oldAnchor) {
+  const cells = tableClearBlock(cm.cm6, block);
+  if (cells === null) return oldAnchor;
+  Vim.getRegisterController().pushText(args.registerName, "delete", clipCells(cells), false, true);
+  return tableEditCursor(cm, oldAnchor.constructor);
+}
+
+// The cursor a table edit left in the editor, for vim.
+function tableEditCursor(cm, Pos) {
+  const view = cm.cm6;
+  const head = view.state.selection.main.head;
+  const line = view.state.doc.lineAt(head);
+  const cursor = new Pos(line.number - 1, head - line.from);
+  const vim = cm.state.vim;
+  // Leaving visual mode, vim first puts the cursor at the selection's head.
+  if (vim.visualMode) vim.sel.head = cursor;
+  return cursor;
+}
+
+// `p`/`P` in normal mode: on a table row, with table rows in the register,
+// paste them as rows (tablePaste), and with cells copied from a table, paste
+// the cells (tablePasteCells); otherwise vim's paste. Not for the `+`
+// register, which vim reads from the clipboard later.
+function orgPaste(Vim) {
+  return function (cm, args, vim) {
+    const register = args.registerName === "+" ? null : Vim.getRegisterController().getRegister(args.registerName);
+    if (cm.cm6 && register && register.linewise && !register.blockwise &&
+      tablePaste(cm.cm6, register.toString(), args.after, args.repeat || 1)) return;
+    const cells = registerCells(register);
+    if (cm.cm6 && cells && tablePasteCells(cm.cm6, cells)) return;
+    return this.paste(cm, args, vim);
   };
 }
 
@@ -835,18 +900,510 @@ function subtreeTextObject(cm, head, motionArgs, vim) {
 
 // Columns of line n's table row for `ar` (the line) or `ir` (between the
 // first and last unescaped pipe), end exclusive; null if line n isn't a table
-// row: a line starting with `|` that has two unescaped pipes, outside code
-// blocks and front matter. A `|` after an odd number of backslashes is escaped.
+// row (see tableRow).
 function tableRowRange(doc, n, inner) {
-  const text = doc.line(n).text;
-  if (!/^\s*\|/.test(text) || scanLines(doc).code[n]) return null;
+  const row = tableRow(doc, n);
+  if (!row) return null;
+  const { pipes } = row;
+  return inner ? { from: pipes[0] + 1, to: pipes[pipes.length - 1] } : { from: 0, to: doc.line(n).length };
+}
+
+// `i|`/`a|` text objects: the table cell at the cursor (see tableColumn), as
+// in vim-table-mode and Vim Motions. `i|` is the cell's text without its
+// padding; `a|` the cell with its padding and the pipe that closes it, so
+// `da|` leaves a row with one cell less. A last cell without a closing pipe
+// runs to the end of the line. A count takes in that many cells, the first at
+// the cursor. On an empty cell `i|` is nothing, but `ci|` still types into it.
+function cellTextObject(cm, head, motionArgs, vim, inputState) {
+  const doc = cm.cm6.state.doc;
+  const row = tableRow(doc, head.line + 1);
+  if (!row) return null;
+  const text = doc.line(head.line + 1).text;
+  const { pipes } = row;
+  const first = tableColumn(row, head.ch);
+  const last = Math.min(first + (motionArgs.repeat || 1) - 1, row.cells.length - 1);
+  const start = pipes[first] + 1;
+  let from = start;
+  let to = last + 1 < pipes.length ? pipes[last + 1] : text.length;
+  if (motionArgs.textObjectInner) {
+    while (from < to && /\s/.test(text[from])) from++;
+    while (to > from && /\s/.test(text[to - 1])) to--;
+  } else if (last + 1 < pipes.length) {
+    to++;
+  }
+  const Pos = head.constructor;
+  if (from >= to) {
+    if (vim.visualMode || !inputState || inputState.operator !== "change") return null;
+    const at = new Pos(head.line, text[start] === " " ? start + 1 : start);
+    return [at, at];
+  }
+  if (vim.visualMode) vim.visualLine = false;
+  // A visual selection includes the character under its head.
+  return [new Pos(head.line, from), new Pos(head.line, vim.visualMode ? to - 1 : to)];
+}
+
+// Markdown pipe tables, for org's table editor. A table row is a line that
+// starts, after any indent, with `|` and has two unescaped pipes, outside
+// code blocks and front matter; a table is a run of such lines. A `|` after
+// an odd number of backslashes is escaped: it is text in its cell. A
+// delimiter row (`| --- | :-: |`) sets the alignment of each column; it holds
+// no cells to move to. As in GFM, only a table's first row of delimiter cells
+// is its delimiter row: a later one, such as `| - | - |` for missing values,
+// is a row of cells like any other. Rows and columns are numbered from 0.
+//
+// Commands that change a table work on a model of it: a list of rows, each
+// { cells, delimiter }, with cells the trimmed text of each cell. They change
+// the model and hand it to replaceTable, which writes it back aligned.
+
+// A delimiter cell: dashes, with a colon at either end for the alignment.
+const DELIMITER_CELL_RE = /^:?-+:?$/;
+
+// Offsets of the unescaped pipes in text.
+function tablePipes(text) {
   const pipes = [];
   for (let i = 0, slashes = 0; i < text.length; i++) {
     if (text[i] === "|" && slashes % 2 === 0) pipes.push(i);
     slashes = text[i] === "\\" ? slashes + 1 : 0;
   }
+  return pipes;
+}
+
+// The table row a line of text would be, or null: { indent, pipes, cells,
+// delimiter }, with delimiter true if every cell is a delimiter cell. Text after the last pipe that isn't blank is one more cell, as
+// a row may leave off its closing pipe.
+function parseTableRow(text) {
+  if (!/^\s*\|/.test(text)) return null;
+  const pipes = tablePipes(text);
   if (pipes.length < 2) return null;
-  return inner ? { from: pipes[0] + 1, to: pipes[pipes.length - 1] } : { from: 0, to: text.length };
+  const cells = [];
+  for (let i = 1; i < pipes.length; i++) cells.push(text.slice(pipes[i - 1] + 1, pipes[i]).trim());
+  const rest = text.slice(pipes[pipes.length - 1] + 1).trim();
+  if (rest) cells.push(rest);
+  const delimiter = cells.every((c) => DELIMITER_CELL_RE.test(c));
+  return { indent: text.slice(0, pipes[0]), pipes, cells, delimiter };
+}
+
+// Line n's table row, or null: { line, indent, pipes, cells, delimiter }.
+function tableRow(doc, n) {
+  const text = doc.line(n).text;
+  if (!/^\s*\|/.test(text) || scanLines(doc).code[n]) return null;
+  const row = parseTableRow(text);
+  return row && { line: n, ...row };
+}
+
+// The table that line n is in, or null: its first and last lines and its
+// rows (see tableRow). Only the first row of delimiter cells is a delimiter
+// row.
+function tableAt(doc, n) {
+  if (n < 1 || n > doc.lines || !tableRow(doc, n)) return null;
+  let first = n;
+  let last = n;
+  while (first > 1 && tableRow(doc, first - 1)) first--;
+  while (last < doc.lines && tableRow(doc, last + 1)) last++;
+  const rows = [];
+  for (let i = first; i <= last; i++) rows.push(tableRow(doc, i));
+  const header = rows.findIndex((r) => r.delimiter);
+  for (let i = header + 1; header >= 0 && i < rows.length; i++) rows[i].delimiter = false;
+  return { first, last, rows };
+}
+
+// The column of a row that offset ch of its line is in. A pipe belongs to
+// the cell it closes; text before the first pipe to the first cell, and text
+// after the last to the last.
+function tableColumn(row, ch) {
+  let k = 0;
+  while (k < row.pipes.length && row.pipes[k] < ch) k++;
+  return Math.max(0, Math.min(k - 1, row.cells.length - 1));
+}
+
+// The cell at pos: { table, row, col }, or null outside a table.
+function tableCellAt(doc, pos) {
+  const line = doc.lineAt(pos);
+  const table = tableAt(doc, line.number);
+  if (!table) return null;
+  const row = line.number - table.first;
+  return { table, row, col: tableColumn(table.rows[row], pos - line.from) };
+}
+
+// A table's model: a copy of its rows' cells, to change and write back.
+function tableModel(table) {
+  return table.rows.map((r) => ({ cells: r.cells.slice(), delimiter: r.delimiter }));
+}
+
+const tableColumns = (rows) => Math.max(1, ...rows.map((r) => r.cells.length));
+
+// The alignment of each column, from the delimiter row: "left",
+// "right", "center", or "" for none.
+function tableAlignments(rows, columns) {
+  const delimiter = rows.find((r) => r.delimiter);
+  return Array.from({ length: columns }, (_, c) => {
+    const cell = (delimiter && delimiter.cells[c]) || "";
+    const left = cell.startsWith(":");
+    const right = cell.length > 1 && cell.endsWith(":");
+    return left && right ? "center" : right ? "right" : left ? "left" : "";
+  });
+}
+
+// East Asian wide and fullwidth characters take two columns in a monospace
+// font, so they count twice when padding cells.
+const WIDE_RE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦\u{20000}-\u{3fffd}]/u;
+
+function textWidth(text) {
+  let width = 0;
+  for (const ch of text) width += WIDE_RE.test(ch) ? 2 : 1;
+  return width;
+}
+
+// The lines of a table model, aligned (org-table-align): every row gets every
+// column, each cell is padded to its column's width with one space on either
+// side, so the pipes line up, and a delimiter row's dashes fill the width,
+// keeping its colons. Cells are padded by their column's alignment, left if
+// it has none. With a delimiter row a column is at least three wide, the
+// width of `---`. Also returns where each cell's text starts in its line
+// (just inside the padding, for an empty cell).
+function formatTable(rows, indent) {
+  const columns = tableColumns(rows);
+  const align = tableAlignments(rows, columns);
+  const min = rows.some((r) => r.delimiter) ? 3 : 1;
+  const widths = align.map((_, c) =>
+    Math.max(min, ...rows.map((r) => (r.delimiter ? 0 : textWidth(r.cells[c] || "")))));
+  const lines = [];
+  const starts = [];
+  for (const row of rows) {
+    let line = indent + "|";
+    const rowStarts = [];
+    for (let c = 0; c < columns; c++) {
+      const w = widths[c];
+      let cell;
+      if (row.delimiter) {
+        const a = align[c];
+        cell = (a === "left" || a === "center" ? ":" : "") + "-".repeat(w - (a === "center" ? 2 : a ? 1 : 0)) +
+          (a === "right" || a === "center" ? ":" : "");
+      } else {
+        const text = row.cells[c] || "";
+        const pad = w - textWidth(text);
+        const before = align[c] === "right" ? pad : align[c] === "center" ? Math.floor(pad / 2) : 0;
+        cell = " ".repeat(before) + text + " ".repeat(pad - before);
+      }
+      rowStarts.push(line.length + 1 + (row.delimiter || !row.cells[c] ? 0 : cell.length - cell.trimStart().length));
+      line += ` ${cell} |`;
+    }
+    lines.push(line);
+    starts.push(rowStarts);
+  }
+  return { lines, starts };
+}
+
+// Write a table model in place of table, aligned, and put the cursor at the
+// start of the text of cell { row, col } of the model, in one change: one
+// `u` undoes it. Lines that don't change aren't touched. The table keeps the
+// indent of its first row.
+function replaceTable(view, table, rows, target) {
+  const doc = view.state.doc;
+  const { lines, starts } = formatTable(rows, table.rows[0].indent);
+  const changes = [];
+  if (lines.length === table.rows.length) {
+    lines.forEach((text, i) => {
+      const line = doc.line(table.first + i);
+      if (line.text !== text) changes.push({ from: line.from, to: line.to, insert: text });
+    });
+  } else {
+    changes.push({ from: doc.line(table.first).from, to: doc.line(table.last).to, insert: lines.join("\n") });
+  }
+  const set = view.state.changes(changes);
+  const row = Math.max(0, Math.min(target.row, lines.length - 1));
+  const col = Math.max(0, Math.min(target.col, starts[row].length - 1));
+  const anchor = set.apply(doc).line(table.first + row).from + starts[row][col];
+  view.dispatch({ changes: set, selection: { anchor }, scrollIntoView: true, userEvent: "input.table" });
+  return true;
+}
+
+// A new row without text; formatTable gives it every column.
+const emptyRow = () => ({ cells: [], delimiter: false });
+
+// org-table-next-field (Tab) and org-table-previous-field (Shift-Tab): align
+// the table at the cursor and go to the next or previous cell, row by row,
+// past the delimiter row. Tab in the last cell adds an empty row and goes to its
+// first cell; Shift-Tab in the first cell stays there. False outside a table.
+function tableNextField(view, forward) {
+  const cell = tableCellAt(view.state.doc, view.state.selection.main.head);
+  if (!cell) return false;
+  const rows = tableModel(cell.table);
+  const columns = tableColumns(rows);
+  let { row, col } = cell;
+  do {
+    col += forward ? 1 : -1;
+    if (col >= columns) [row, col] = [row + 1, 0];
+    else if (col < 0) [row, col] = [row - 1, columns - 1];
+  } while (row >= 0 && row < rows.length && rows[row].delimiter);
+  if (row >= rows.length) rows.push(emptyRow());
+  else if (row < 0) ({ row, col } = cell);
+  return replaceTable(view, cell.table, rows, { row, col });
+}
+
+// org-table-next-row (Enter): align the table at the cursor and go to the
+// same column in the next row, past the delimiter row, adding an empty row at
+// the end of the table. False outside a table.
+function tableNextRow(view) {
+  const cell = tableCellAt(view.state.doc, view.state.selection.main.head);
+  if (!cell) return false;
+  const rows = tableModel(cell.table);
+  let row = cell.row + 1;
+  while (row < rows.length && rows[row].delimiter) row++;
+  if (row >= rows.length) rows.push(emptyRow());
+  return replaceTable(view, cell.table, rows, { row, col: cell.col });
+}
+
+// The org table structure edits (M-← M-→ M-↑ M-↓ and their Shift forms).
+// Each changes a table model in place for the cell at { row, col } and
+// returns the cell the cursor goes to, or null, changing nothing, where the
+// edit can't be made. Markdown has one header row, right above the
+// delimiter row: rows never move across the delimiter row (org won't move one
+// past an hline), the delimiter row is neither moved nor deleted, and the
+// header is never deleted. New rows go below the header.
+const TABLE_EDITS = {
+  // org-table-move-column-left/right: the delimiter row's colons move too.
+  moveColumnLeft: (rows, at) => tableSwapColumns(rows, at, at.col - 1),
+  moveColumnRight: (rows, at) => tableSwapColumns(rows, at, at.col + 1),
+  // org-table-move-row-up/down.
+  moveRowUp: (rows, at) => tableSwapRows(rows, at, at.row - 1),
+  moveRowDown: (rows, at) => tableSwapRows(rows, at, at.row + 1),
+  // org-table-delete-column: the last column stays.
+  deleteColumn(rows, at) {
+    const columns = tableColumns(rows);
+    if (columns < 2) return null;
+    for (const r of rows) r.cells.splice(at.col, 1);
+    return { row: at.row, col: Math.min(at.col, columns - 2) };
+  },
+  // org-table-insert-column: an empty column left of the cursor's, which the
+  // cursor goes to.
+  insertColumn(rows, at) {
+    for (const r of rows) {
+      while (r.cells.length < at.col) r.cells.push("");
+      r.cells.splice(at.col, 0, "");
+    }
+    return at;
+  },
+  // org-table-kill-row: the cursor goes to the row that takes its place, or
+  // to the row above at the end of the table. The last row stays.
+  deleteRow(rows, at) {
+    const header = tableHeader(rows);
+    if (rows.length < 2 || at.row === header || (at.row < header && header === 1)) return null;
+    rows.splice(at.row, 1);
+    return { row: Math.min(at.row, rows.length - 1), col: at.col };
+  },
+  // org-table-insert-row: an empty row above the cursor's, which the cursor
+  // goes to; in the header or on its delimiter row, the first row below them.
+  insertRow(rows, at) {
+    const row = Math.max(at.row, tableHeader(rows) + 1);
+    rows.splice(row, 0, emptyRow());
+    return { row, col: at.col };
+  },
+};
+
+// The number of header rows: the rows above the delimiter row, or -1
+// for a table without one.
+const tableHeader = (rows) => rows.findIndex((r) => r.delimiter);
+
+// Swap the cursor's column with column `to`, in every row.
+function tableSwapColumns(rows, at, to) {
+  const columns = tableColumns(rows);
+  if (to < 0 || to >= columns) return null;
+  for (const r of rows) {
+    while (r.cells.length < columns) r.cells.push("");
+    [r.cells[at.col], r.cells[to]] = [r.cells[to], r.cells[at.col]];
+  }
+  return { row: at.row, col: to };
+}
+
+// Swap the cursor's row with row `to`; neither may be a delimiter row.
+function tableSwapRows(rows, at, to) {
+  if (to < 0 || to >= rows.length || rows[to].delimiter || rows[at.row].delimiter) return null;
+  [rows[at.row], rows[to]] = [rows[to], rows[at.row]];
+  return { row: to, col: at.col };
+}
+
+// Make a table edit (a key of TABLE_EDITS) `count` times at the cursor, or as
+// many times as it can be made, and align the table, in one undo step. False
+// outside a table, or if the edit can't be made at all.
+function tableEdit(view, name, count = 1) {
+  const cell = tableCellAt(view.state.doc, view.state.selection.main.head);
+  if (!cell) return false;
+  const rows = tableModel(cell.table);
+  let at = { row: cell.row, col: cell.col };
+  let done = 0;
+  for (let next; done < count && (next = TABLE_EDITS[name](rows, at)); done++) at = next;
+  return done > 0 && replaceTable(view, cell.table, rows, at);
+}
+
+// The table that a linewise delete of lines first..last (1-based) deletes
+// rows of, or null: the table holds them all, but they aren't all of it (a
+// plain delete then takes the whole table).
+function tableRowsDeleted(doc, first, last) {
+  const table = tableAt(doc, first);
+  return table && last <= table.last && !(first === table.first && last === table.last) ? table : null;
+}
+
+// Delete lines first..last (1-based) of table, as `dd`, `3dd`, `dj` or
+// `Vjd` do there: by deleteRow's rules, aligning the table, with the cursor
+// in column col. Returns the deleted lines' text, or null, changing nothing,
+// if a row can't be deleted (the delimiter row or the only header row): a
+// delete that would leave a table without its header is refused whole.
+function tableDeleteRows(view, table, first, last, col) {
+  const doc = view.state.doc;
+  const rows = tableModel(table);
+  const at = { row: first - table.first, col };
+  let target = at;
+  for (let n = first; n <= last; n++) {
+    target = TABLE_EDITS.deleteRow(rows, at);
+    if (!target) return null;
+  }
+  const text = doc.sliceString(doc.line(first).from, doc.line(last).to) + "\n";
+  replaceTable(view, table, rows, target);
+  return text;
+}
+
+// The table rows that linewise register text holds, or null if a line of it
+// isn't a table row. They go below the delimiter row, so none of them is one:
+// a copied delimiter row pastes as a row of dashes.
+function registerTableRows(text) {
+  const lines = text.replace(/\n$/, "").split("\n");
+  const rows = lines.map(parseTableRow);
+  return rows.every(Boolean) ? rows.map((r) => ({ cells: r.cells, delimiter: false })) : null;
+}
+
+// `p`/`P` with table rows in a linewise register, on a table row (org pastes
+// rows and aligns): put the rows `count` times below or above the cursor's
+// row and align the table, in one undo step. Rows go below the header and
+// its delimiter row, as insertRow's do, which keeps the table valid. The
+// cursor goes to the first cell of the first pasted row. False outside a
+// table, or if a line of text isn't a table row.
+function tablePaste(view, text, after, count) {
+  const cell = tableCellAt(view.state.doc, view.state.selection.main.head);
+  const pasted = cell && registerTableRows(text);
+  if (!pasted) return false;
+  const rows = tableModel(cell.table);
+  const row = Math.max(cell.row + (after ? 1 : 0), tableHeader(rows) + 1);
+  for (let i = 0; i < count; i++) rows.splice(row, 0, ...pasted);
+  return replaceTable(view, cell.table, rows, { row, col: 0 });
+}
+
+// Org's rectangle of cells (org-table-copy-region, -cut-region and
+// -paste-rectangle), on a visual block (Ctrl-v): the operation takes the
+// whole cells the block's corners are in, not the characters it covers, so
+// that it does the same in a table that isn't aligned. The selection isn't
+// drawn as cells, since an unaligned table's cells aren't a block of text.
+//
+// A block: the table that both corners of a visual selection are in, and the
+// rows (top..bottom) and columns (left..right) from the cell of one corner to
+// that of the other. With toEnd, as for `D`, `X` and `Y`, the columns go to
+// the last one. Null unless both corners are in one table.
+function tableBlock(doc, sel, toEnd) {
+  const offset = (pos) => {
+    const line = doc.line(Math.min(pos.line + 1, doc.lines));
+    return line.from + Math.min(pos.ch, line.length); // `$` makes ch Infinity
+  };
+  const a = tableCellAt(doc, offset(sel.anchor));
+  const b = tableCellAt(doc, offset(sel.head));
+  if (!a || !b || a.table.first !== b.table.first) return null;
+  return {
+    table: a.table,
+    top: Math.min(a.row, b.row),
+    bottom: Math.max(a.row, b.row),
+    left: Math.min(a.col, b.col),
+    right: toEnd ? tableColumns(a.table.rows) - 1 : Math.max(a.col, b.col),
+  };
+}
+
+// The text of a block's cells, a list per row. Like org, which copies fields
+// and not hlines, it leaves out the delimiter row; null if that leaves no row.
+function tableBlockCells(block) {
+  const { left, right } = block;
+  const cells = block.table.rows.slice(block.top, block.bottom + 1).filter((r) => !r.delimiter)
+    .map((r) => Array.from({ length: right - left + 1 }, (_, i) => r.cells[left + i] || ""));
+  return cells.length > 0 ? cells : null;
+}
+
+// The cells last copied or cut (org's org-table-clip), and the text they went
+// to the register as: blockwise, a line per row, the cells separated by tabs,
+// so that outside a table, or in another program, they paste as columns of
+// text. `p` with that text in its register pastes the cells.
+let tableClip = null;
+
+function clipCells(cells) {
+  tableClip = { text: cells.map((r) => r.join("\t")).join("\n"), cells };
+  return tableClip.text;
+}
+
+function registerCells(register) {
+  return register && register.blockwise && tableClip && register.toString() === tableClip.text ? tableClip.cells : null;
+}
+
+// Visual block `d` and `x` in a table (org-table-cut-region): blank the cells
+// of block, as org does, rather than delete them, align the table, and put the
+// cursor in the first blanked cell, in one undo step. Returns the cells'
+// text, or null, changing nothing, if the block spans only the delimiter row.
+function tableClearBlock(view, block) {
+  const cells = tableBlockCells(block);
+  if (!cells) return null;
+  const rows = tableModel(block.table);
+  let first = -1;
+  for (let r = block.top; r <= block.bottom; r++) {
+    if (rows[r].delimiter) continue;
+    if (first < 0) first = r;
+    for (let c = block.left; c <= block.right && c < rows[r].cells.length; c++) rows[r].cells[c] = "";
+  }
+  replaceTable(view, block.table, rows, { row: first, col: block.left });
+  return cells;
+}
+
+// `p`/`P` with cells in the register (org-table-paste-rectangle): put them
+// into the table over the cells from the cursor's to the right and down, past
+// the delimiter row, adding rows and columns where they run past the table, and
+// align it, in one undo step. The cursor goes to the first pasted cell. On the
+// delimiter row they go from the row below it. False outside a table.
+function tablePasteCells(view, cells) {
+  const at = tableCellAt(view.state.doc, view.state.selection.main.head);
+  if (!at) return false;
+  const rows = tableModel(at.table);
+  let r = at.row;
+  let first = -1;
+  for (const pasted of cells) {
+    while (r < rows.length && rows[r].delimiter) r++;
+    if (r >= rows.length) rows.push(emptyRow());
+    if (first < 0) first = r;
+    const row = rows[r++];
+    while (row.cells.length < at.col) row.cells.push("");
+    row.cells.splice(at.col, pasted.length, ...pasted);
+  }
+  return replaceTable(view, at.table, rows, { row: first, col: at.col });
+}
+
+// The cells a visual block yank in a table copies, or null: see
+// cellYankPushText. The editor yanking is the active one, still in visual
+// block mode while vim pushes the text.
+function yankedCells(app, linewise) {
+  const view = activeEditorView(app);
+  const vim = view && getVimState(view);
+  if (!vim || !vim.visualMode || !vim.visualBlock || !vim.sel) return null;
+  const block = tableBlock(view.state.doc, vim.sel, linewise);
+  return block && tableBlockCells(block);
+}
+
+// Visual block `y` and `Y` in a table (org-table-copy-region) copy the cells
+// of the block. Vim's own yank runs, so that what an engine does around it,
+// such as Vim Motions' yank highlight, still happens; only the text it puts in
+// the register is the cells'. The yank operator isn't exposed, so this wraps
+// the register controller's pushText, which it calls.
+function cellYankPushText(stock, app) {
+  const cellsOf = guarded(yankedCells);
+  const patched = function (name, operator, text, linewise, blockwise, ...rest) {
+    const cells = operator === "yank" && blockwise ? cellsOf(app, linewise) : null;
+    if (cells) return stock.call(this, name, operator, clipCells(cells), false, true, ...rest);
+    return stock.call(this, name, operator, text, linewise, blockwise, ...rest);
+  };
+  patched.stock = stock;
+  return patched;
 }
 
 // The visual selection takes in from..to (to inclusive), or their lines in
@@ -1489,6 +2046,173 @@ class BulletWidget extends WidgetType {
 const bullets = Array.from({ length: MAX_LEVEL + 1 }, (_, level) =>
   Decoration.widget({ widget: new BulletWidget(level), side: -1 }));
 
+// Live Preview draws a table as a widget whose cells are editors of their
+// own, without vim: there `u`, `gg` or `V` would be typed into the cell. So
+// while vim's cursor or selection is in a table, the table is shown as text,
+// as in Source mode, and every vim key works on it. Obsidian has no switch
+// for this, but it draws a table as text when one of its search highlights
+// touches it. The plugin puts such a highlight on the line break after the
+// table (before it, at the end of the note), where it colours nothing.
+// Obsidian doesn't export the highlight's mark or the effects that add and
+// filter highlights; probeSearchHighlight finds them.
+const SEARCH_HIGHLIGHT = "obsidian-search-match-highlight";
+let searchHighlight = null;
+
+// Ask Obsidian's editor to add a search highlight, and keep the transaction
+// it would dispatch instead of dispatching it: its effects are the filter (of
+// the old highlights) and the add, whose range carries the mark.
+function probeSearchHighlight(editor) {
+  if (searchHighlight || !editor || typeof editor.addHighlights !== "function") return;
+  const view = editor.cm;
+  if (!view || view.state.doc.length === 0) return;
+  const own = Object.prototype.hasOwnProperty.call(view, "dispatch") ? view.dispatch : null;
+  let spec = null;
+  view.dispatch = (s) => { spec = s; };
+  try {
+    const all = { from: editor.offsetToPos(0), to: editor.offsetToPos(view.state.doc.length) };
+    editor.addHighlights([all], SEARCH_HIGHLIGHT, true, false);
+  } finally {
+    if (own) view.dispatch = own;
+    else delete view.dispatch;
+  }
+  const [filter, add] = (spec && spec.effects) || [];
+  const range = add && Array.isArray(add.value) && add.value[0];
+  if (!(filter instanceof StateEffect) || !range || !(range.value instanceof Decoration)) return;
+  searchHighlight = { filter: filter.type, add: add.type, mark: range.value };
+}
+
+// The line breaks the plugin has highlighted, mapped as Obsidian maps the
+// highlights, so it can take them off again.
+const setTableBreaks = StateEffect.define();
+const tableBreaksField = StateField.define({
+  create: () => [],
+  update(breaks, tr) {
+    for (const e of tr.effects) if (e.is(setTableBreaks)) return e.value;
+    return tr.docChanged ? mapBreaks(breaks, tr.changes) : breaks;
+  },
+});
+
+function mapBreaks(breaks, changes) {
+  return breaks
+    .map((r) => ({ from: changes.mapPos(r.from, 1), to: changes.mapPos(r.to, -1) }))
+    .filter((r) => r.from < r.to);
+}
+
+// The line break next to the table at pos, or null (also for a table that is
+// the whole note).
+function tableBreak(doc, pos) {
+  const table = tableAt(doc, doc.lineAt(pos).number);
+  if (!table) return null;
+  if (table.last < doc.lines) {
+    const to = doc.line(table.last).to;
+    return { from: to, to: to + 1 };
+  }
+  if (table.first === 1) return null;
+  const from = doc.line(table.first).from;
+  return { from: from - 1, to: from };
+}
+
+// The line breaks of the tables that the selection's ends are in.
+function tableBreaks(doc, selection) {
+  const breaks = [];
+  for (const r of selection.ranges) {
+    for (const pos of [r.anchor, r.head]) {
+      const b = tableBreak(doc, pos);
+      if (b && !breaks.some((o) => o.from === b.from)) breaks.push(b);
+    }
+  }
+  return breaks.sort((a, b) => a.from - b.from);
+}
+
+const sameBreaks = (a, b) => a.length === b.length && a.every((r, i) => r.from === b[i].from && r.to === b[i].to);
+
+// A highlight the plugin may have put: one line break next to a table line.
+function isTableBreak(doc, from, to) {
+  if (to - from !== 1 || doc.sliceString(from, to) !== "\n") return false;
+  const n = doc.lineAt(from).number;
+  return !!(tableRow(doc, n) || (n < doc.lines && tableRow(doc, n + 1)));
+}
+
+// Highlight the line breaks of the tables the selection is in, and take the
+// highlight off a table the selection leaves. Done in the transaction that
+// moves the selection, so Obsidian never draws the widget with the cursor in
+// it (it would focus a cell). In Source mode the highlights do nothing.
+function showTablesAsText(enabled) {
+  return [
+    tableBreaksField,
+    EditorState.transactionExtender.of((tr) => {
+      const hl = searchHighlight;
+      if (!hl) return null;
+      const old = mapBreaks(tr.startState.field(tableBreaksField, false) || [], tr.changes);
+      const want = enabled() ? tableBreaks(tr.newDoc, tr.newSelection) : [];
+      // Clearing Obsidian's search highlights may clear these too.
+      const cleared = tr.effects.some((e) => e.is(hl.filter));
+      if (!cleared && sameBreaks(old, want)) return null;
+      return {
+        effects: [
+          hl.filter.of((from, to, value) => value !== hl.mark || !old.some((r) => r.from === from && r.to === to)),
+          hl.add.of(want.map((r) => hl.mark.range(r.from, r.to))),
+          setTableBreaks.of(want),
+        ],
+      };
+    }),
+  ];
+}
+
+// The line breaks highlighted once tr is applied: those the transaction sets,
+// or the old ones mapped through its changes.
+function tableBreaksAfter(tr) {
+  for (const e of tr.effects) if (e.is(setTableBreaks)) return e.value;
+  return mapBreaks(tr.startState.field(tableBreaksField, false) || [], tr.changes);
+}
+
+// Obsidian's table widget follows the note's selection: a cursor that lands
+// in its table but in no cell, as on the delimiter row, it moves a moment
+// later to the first cell (coming from above) or the last (from below). The
+// widget lives on while its table is shown as text, and still does this, so
+// `k` onto the delimiter row ended on the table's last row. While its table
+// is shown as text the widget ignores the selection. Obsidian doesn't export
+// the widget's class; it is found from a widget drawn in an editor.
+let tableWidgetPatched = false;
+
+function patchTableWidget(view, restorers) {
+  if (tableWidgetPatched) return;
+  const el = view.contentDOM.querySelector(".cm-table-widget");
+  const tile = el && (el.cmTile || el.cmView);
+  let proto = tile && tile.widget && Object.getPrototypeOf(tile.widget);
+  while (proto && !Object.hasOwn(proto, "receiveSelection")) proto = Object.getPrototypeOf(proto);
+  if (!proto || typeof proto.receiveSelection !== "function") return;
+  const stock = proto.receiveSelection;
+  proto.receiveSelection = function (tr) {
+    if (tr && typeof this.start === "number" && this.start <= tr.newDoc.length) {
+      const b = tableBreak(tr.newDoc, this.start);
+      if (b && tableBreaksAfter(tr).some((r) => r.from === b.from)) return;
+    }
+    return stock.call(this, tr);
+  };
+  tableWidgetPatched = true;
+  restorers.push(() => {
+    proto.receiveSelection = stock;
+    tableWidgetPatched = false;
+  });
+}
+
+// The offset of the text of a table's cell, given its row and column as the
+// widget draws them: the widget leaves out the delimiter row. An empty cell
+// gives the offset after its padding space.
+function widgetCellPos(doc, table, row, col) {
+  const r = table.rows.filter((r) => !r.delimiter)[row];
+  if (!r) return null;
+  const line = doc.line(r.line);
+  const c = Math.min(col, r.cells.length - 1);
+  const start = r.pipes[c] + 1;
+  const end = c + 1 < r.pipes.length ? r.pipes[c + 1] : line.text.length;
+  let ch = start;
+  while (ch < end && line.text[ch] === " ") ch++;
+  if (ch === end) ch = Math.min(start + 1, end);
+  return line.from + ch;
+}
+
 // Obsidian's flag for Live Preview, absent outside Obsidian (and in tests
 // that don't add it): then the editor counts as Source mode.
 function livePreview(state) {
@@ -1700,8 +2424,20 @@ class EvilOrgSettingTab extends PluginSettingTab {
 }
 
 // The letters of the Alt keys handleAltMove catches, by key code, for when
-// the key isn't a letter (macOS Option-j is `∆`).
-const ALT_CODES = { KeyJ: "j", KeyK: "k" };
+// the key isn't a letter (macOS Option-j is `∆`), and the arrow keys that
+// stand for the same letters in a table (M-← is M-h, as in evil-org).
+const ALT_CODES = { KeyH: "h", KeyJ: "j", KeyK: "k", KeyL: "l" };
+const ALT_ARROWS = { ArrowLeft: "h", ArrowDown: "j", ArrowUp: "k", ArrowRight: "l" };
+
+// The table edits of M-h, M-l and the Shift forms (M-S-h is "H"), by letter.
+// Vim gets them as keys of their own, which no keydown gives, so that off a
+// table these Alt keys still reach vim, the editor and the hotkeys as before.
+// In a table M-j/M-k are <A-j>/<A-k>, which move the row there.
+const TABLE_KEYS = {
+  h: "moveColumnLeft", l: "moveColumnRight",
+  H: "deleteColumn", L: "insertColumn", K: "deleteRow", J: "insertRow",
+};
+const tableVimKey = (edit) => `<OrgTable${edit[0].toUpperCase()}${edit.slice(1)}>`;
 
 // Command ids and names are user-facing: hotkeys are bound to the ids.
 const COMMANDS = [
@@ -1723,6 +2459,8 @@ module.exports = class EvilOrgPlugin extends Plugin {
     if (typeof window.CodeMirrorAdapter === "function") this.patchFindPosV(window.CodeMirrorAdapter.prototype);
     const view = activeEditorView(this.app);
     if (view) this.patchFindPosV(view.cm);
+    const md = this.app.workspace.getActiveViewOfType(MarkdownView);
+    guarded(probeSearchHighlight)(md && md.editor);
     if (Vim === this.patchedVim) return;
     // Every engine patched keeps the overrides until unload, not just the
     // current one. The engine counts as patched and its restorer is queued
@@ -1734,7 +2472,9 @@ module.exports = class EvilOrgPlugin extends Plugin {
     (this.vimRestorers ||= []).push(guarded(() => {
       Vim.defineMotion("expandToLine", stockExpandToLine);
       Vim.defineAction("orgMoveSubtree", () => {});
+      Vim.defineAction("orgTableEdit", () => {});
       Vim.defineMotion("orgSubtree", () => null);
+      Vim.defineMotion("orgCell", () => null);
       Vim.defineMotion("orgElement", () => null);
       Vim.defineMotion("orgUpHeading", (_cm, head) => head);
       Vim.defineAction("orgOpenLine", function (cm, args, vim) {
@@ -1743,6 +2483,9 @@ module.exports = class EvilOrgPlugin extends Plugin {
       // Keymap entries can't be removed, so make them behave like the stock ones.
       Vim.defineMotion("orgPasteAfter", (_cm, head) => head);
       Vim.defineMotion("orgPasteBefore", (_cm, head) => head);
+      Vim.defineAction("orgPaste", function (cm, args, vim) {
+        return this.paste(cm, args, vim);
+      });
       Vim.defineOperator("orgIndent", stockIndent);
       Vim.defineOperator("orgDelete", stockDelete(Vim));
     }));
@@ -1754,12 +2497,14 @@ module.exports = class EvilOrgPlugin extends Plugin {
   overrideVim(Vim) {
     Vim.defineMotion("expandToLine", foldAwareExpandToLine);
     // A command's motion runs before its action; these entries shadow the
-    // stock `p`/`P` in normal mode (visual-mode paste is untouched).
+    // stock `p`/`P` in normal mode (visual-mode paste is untouched). On a
+    // table row, orgPaste pastes table rows as rows of the table.
     Vim.defineMotion("orgPasteAfter", pasteMotion(Vim, true));
     Vim.defineMotion("orgPasteBefore", pasteMotion(Vim, false));
-    Vim.mapCommand("p", "action", "paste", { after: true, isEdit: true },
+    Vim.defineAction("orgPaste", guarded(orgPaste(Vim)));
+    Vim.mapCommand("p", "action", "orgPaste", { after: true, isEdit: true },
       { isEdit: true, context: "normal", motion: "orgPasteAfter" });
-    Vim.mapCommand("P", "action", "paste", { after: false, isEdit: true },
+    Vim.mapCommand("P", "action", "orgPaste", { after: false, isEdit: true },
       { isEdit: true, context: "normal", motion: "orgPasteBefore" });
     // `>`/`<` shadow the stock indent operator; doubled (`>>`) they still
     // pair up, since vim matches operators by name.
@@ -1777,13 +2522,27 @@ module.exports = class EvilOrgPlugin extends Plugin {
         operatorMotionArgs: { visualLine }, context: "visual",
       });
     }
-    // M-j / M-k move the subtree (M-↓ / M-↑ in org-mode). On macOS vim reads
-    // Option-j as <A-j> too.
+    // M-j / M-k move the subtree (M-↓ / M-↑ in org-mode), or in a table the
+    // row. On macOS vim reads Option-j as <A-j> too.
     Vim.defineAction("orgMoveSubtree", guarded((cm, args) => {
-      if (cm.cm6) moveSubtree(cm.cm6, args.forward, args.repeat || 1);
+      const view = cm.cm6;
+      if (!view) return;
+      const count = args.repeat || 1;
+      if (tableCellAt(view.state.doc, view.state.selection.main.head)) {
+        tableEdit(view, args.forward ? "moveRowDown" : "moveRowUp", count);
+      } else {
+        moveSubtree(view, args.forward, count);
+      }
     }));
     Vim.mapCommand("<A-j>", "action", "orgMoveSubtree", { forward: true }, { context: "normal", isEdit: true });
     Vim.mapCommand("<A-k>", "action", "orgMoveSubtree", { forward: false }, { context: "normal", isEdit: true });
+    // The other table edits, on keys only handleAltMove gives vim.
+    Vim.defineAction("orgTableEdit", guarded((cm, args) => {
+      if (cm.cm6) tableEdit(cm.cm6, args.edit, args.repeat || 1);
+    }));
+    for (const edit of Object.values(TABLE_KEYS)) {
+      Vim.mapCommand(tableVimKey(edit), "action", "orgTableEdit", { edit }, { context: "normal", isEdit: true });
+    }
     // `ar`/`ir` shadow vim's `a<register>`/`i<register>` text objects for `r`,
     // which vim leaves undefined.
     Vim.defineMotion("orgSubtree", subtreeTextObject);
@@ -1793,6 +2552,13 @@ module.exports = class EvilOrgPlugin extends Plugin {
     Vim.defineMotion("orgElement", elementTextObject);
     Vim.mapCommand("ae", "motion", "orgElement", {});
     Vim.mapCommand("ie", "motion", "orgElement", { textObjectInner: true });
+    // `a|`/`i|` shadow Vim Motions' table cell text objects, as `ar`/`ir` do
+    // its row ones. Stock vim has none: `|` alone is the column motion.
+    Vim.defineMotion("orgCell", cellTextObject);
+    Vim.mapCommand("a|", "motion", "orgCell", {});
+    Vim.mapCommand("i|", "motion", "orgCell", { textObjectInner: true });
+    // Visual block `y` in a table copies cells.
+    this.patchPushText(Vim);
     // `gh` shadows vim's select mode (codemirror-vim has it in some builds,
     // such as the one in Vim Motions). Like `gg`, it is linewise for
     // operators and goes on the jump list.
@@ -1821,25 +2587,70 @@ module.exports = class EvilOrgPlugin extends Plugin {
     });
   }
 
+  // Wrap pushText (see cellYankPushText) on the class of the engine's register
+  // controller, which outlives the controller: vim makes a new one when it
+  // resets. Each class is patched once.
+  patchPushText(Vim) {
+    let proto = typeof Vim.getRegisterController === "function" ? Vim.getRegisterController() : null;
+    while (proto && !Object.hasOwn(proto, "pushText")) proto = Object.getPrototypeOf(proto);
+    if (!proto || typeof proto.pushText !== "function" || proto.pushText.stock) return;
+    proto.pushText = cellYankPushText(proto.pushText, this.app);
+    (this.vimRestorers ||= []).push(() => {
+      proto.pushText = proto.pushText.stock || proto.pushText;
+    });
+  }
+
   // On macOS Option-j arrives as `∆` with code "KeyJ", and some vim builds
   // strip the Alt modifier rather than restoring it from the code, leaving a
   // bare `j`. Catch Alt-j/Alt-k before any editor handler sees them and give
   // vim <A-j>/<A-k> directly, which keeps counts and `.` working. A typed
   // letter wins over the code, so on Colemak or Dvorak the key in QWERTY's
   // J position (Alt-n, Alt-h) is left alone.
+  //
+  // On a table row the same goes for the table keys: Alt with h, j, k, l or
+  // an arrow, with or without Shift. They are caught only there, and only in
+  // the note's own editor: a cell editor of a Live Preview table keeps all
+  // its keys, Alt-j/Alt-k too. Off a table Alt-arrows (word motion on macOS)
+  // and the rest are left alone.
   handleAltMove(e) {
-    if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (!e.altKey || e.ctrlKey || e.metaKey) return;
     const key = (e.key || "").toLowerCase();
-    const letter = /^[a-z]$/.test(key) ? (/^[jk]$/.test(key) ? key : null) : ALT_CODES[e.code];
+    const arrow = ALT_ARROWS[e.key];
+    const letter = arrow || (/^[a-z]$/.test(key) ? (/^[hjkl]$/.test(key) ? key : null) : ALT_CODES[e.code]);
     const Vim = this.altMoveVim;
     if (!letter || !Vim) return;
     const view = activeEditorView(this.app);
     if (!view || !view.dom.contains(e.target)) return;
     // A pending count is kept in the key buffer; let it through to vim.
     if (!normalMode(view, true)) return;
+    const table = tableCellAt(view.state.doc, view.state.selection.main.head);
+    if (table && e.target !== view.contentDOM) return;
+    let vimKey;
+    if (table) {
+      const edit = TABLE_KEYS[e.shiftKey ? letter.toUpperCase() : letter];
+      vimKey = edit ? tableVimKey(edit) : `<A-${letter}>`;
+    } else if (!arrow && !e.shiftKey && /^[jk]$/.test(letter)) {
+      vimKey = `<A-${letter}>`;
+    } else {
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
-    Vim.handleKey(view.cm, `<A-${letter}>`, "user");
+    Vim.handleKey(view.cm, vimKey, "user");
+  }
+
+  // Enter in a table (org-table-next-row) in vim normal mode. Vim reads Enter
+  // as `j^` before the editor's keymaps see it, so it is caught first, as
+  // Alt-j is. Only in the note's own editor: in Live Preview a table's cells
+  // are editors of their own, with their own Enter. With a count pending,
+  // Enter is vim's. In insert mode vim leaves Enter to the keymap.
+  handleTableEnter(e) {
+    if (e.key !== "Enter" || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) return;
+    const view = activeEditorView(this.app);
+    if (!view || e.target !== view.contentDOM || !normalMode(view)) return;
+    if (!guarded(tableNextRow)(view)) return;
+    e.preventDefault();
+    e.stopPropagation();
   }
 
   // Change a setting in every editor, and keep the choice.
@@ -1864,6 +2675,62 @@ module.exports = class EvilOrgPlugin extends Plugin {
     this.vimRestorers = [];
     this.patchedVim = null;
     this.altMoveVim = null;
+    // Draw the tables shown as text as widgets again.
+    const hl = searchHighlight;
+    if (!hl) return;
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view.editor && leaf.view.editor.cm;
+      if (!view) continue;
+      const doc = view.state.doc;
+      view.dispatch({ effects: hl.filter.of((from, to, value) => value !== hl.mark || !isTableBreak(doc, from, to)) });
+    }
+  }
+
+  // A click on a cell of a Live Preview table, in an editor with vim, moves
+  // vim's cursor to the cell's text instead of opening Obsidian's editor for
+  // the cell, which has no vim. The table is then shown as text (see
+  // showTablesAsText). The widget opens its cell editor on pointerdown; the
+  // mouse events that follow are stopped too. The drag handles, the menu and
+  // the add buttons are left alone, as are links and other controls in a
+  // cell, so Obsidian follows a link, with a modifier key too.
+  handleTableClick(e) {
+    if (e.button !== 0 || !this.patchedVim || !searchHighlight) return;
+    const target = e.target;
+    if (!target || typeof target.closest !== "function") return;
+    const cell = target.closest("td, th");
+    const widget = cell && cell.closest(".cm-table-widget");
+    if (!widget || target.closest(".table-col-drag-handle, .table-row-drag-handle")) return;
+    const control = target.closest("a, input, button, select, textarea");
+    if (control && cell.contains(control)) return;
+    const editor = widget.parentElement && widget.parentElement.closest(".cm-editor");
+    const view = editor && EditorView.findFromDOM(editor);
+    if (!view || !getVimState(view)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type !== "pointerdown") return;
+    const doc = view.state.doc;
+    const table = tableAt(doc, doc.lineAt(view.posAtDOM(widget)).number);
+    const tr = cell.parentElement;
+    const row = [...widget.querySelectorAll("tr")].indexOf(tr);
+    const col = [...tr.children].filter((c) => /^T[DH]$/.test(c.tagName)).indexOf(cell);
+    const pos = table && row >= 0 && col >= 0 ? widgetCellPos(doc, table, row, col) : null;
+    if (pos === null) return;
+    view.dispatch({ selection: { anchor: pos }, userEvent: "select.pointer" });
+    view.focus();
+  }
+  // The widget may also focus a cell's editor by itself when it draws, as
+  // when the cursor leaves the table. Vim's keys would go to the cell, and
+  // once the cursor is back in the table the widget goes, with the focus:
+  // keys then reach nothing. Cells are edited as text (see handleTableClick),
+  // so give the focus back to the note's editor.
+  handleTableFocus(e) {
+    if (!this.patchedVim || !searchHighlight) return;
+    const target = e.target;
+    if (!target || typeof target.closest !== "function") return;
+    const widget = target.closest(".cm-table-widget");
+    const editor = widget && widget.parentElement && widget.parentElement.closest(".cm-editor");
+    const view = editor && EditorView.findFromDOM(editor);
+    if (view && getVimState(view)) view.focus();
   }
 
   async onload() {
@@ -1871,31 +2738,54 @@ module.exports = class EvilOrgPlugin extends Plugin {
     // plugin), so re-check whenever the active editor changes.
     this.app.workspace.onLayoutReady(() => this.installVimOverrides());
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.installVimOverrides()));
-    const altMove = (doc) => this.registerDomEvent(doc, "keydown", (e) => this.handleAltMove(e), { capture: true });
-    altMove(document);
+    const listen = (doc) => {
+      this.registerDomEvent(doc, "keydown", (e) => {
+        this.handleAltMove(e);
+        this.handleTableEnter(e);
+      }, { capture: true });
+      for (const type of ["pointerdown", "mousedown", "click"]) {
+        this.registerDomEvent(doc, type, guarded((e) => this.handleTableClick(e)), { capture: true });
+      }
+      this.registerDomEvent(doc, "focusin", guarded((e) => this.handleTableFocus(e)), { capture: true });
+    };
+    listen(document);
     // A pop-out window has a document of its own.
-    this.registerEvent(this.app.workspace.on("window-open", (win) => altMove(win.doc)));
-    // Tab cycles only in normal mode; elsewhere it's left to vim and the editor.
-    const tab = (fn) => guarded((view) => normalMode(view) && fn(view));
+    this.registerEvent(this.app.workspace.on("window-open", (win) => listen(win.doc)));
+    // In a table, Tab, Shift-Tab and Enter move between cells in normal and
+    // insert mode, as org's do in evil's normal and insert states. Elsewhere
+    // Tab cycles folds in normal mode only, and the rest is left to vim and
+    // the editor.
+    const table = (fn) => (view) => (normalMode(view) || insertMode(view)) && fn(view);
+    const tab = (forward, cycle) => guarded((view) => table((v) => tableNextField(v, forward))(view) ||
+      (normalMode(view) && cycle(view)));
     this.registerEditorExtension([
       Prec.highest(
         keymap.of([
           {
             key: "Tab",
-            run: tab(localCycle),
-            shift: tab(globalCycle),
+            run: tab(true, localCycle),
+            shift: tab(false, globalCycle),
           },
+          { key: "Enter", run: guarded(table(tableNextRow)) },
         ])
       ),
       EditorState.transactionFilter.of((tr) => keepSelectedFoldsClosed(tr, this.app)),
       invertedEffects.of(deletedFolds),
       headingFolds,
       codeBlockFolds,
+      showTablesAsText(() => {
+        const view = this.patchedVim && activeEditorView(this.app);
+        return !!view && !!getVimState(view);
+      }),
       EditorView.updateListener.of((update) => {
         // An editor that opened without a leaf change, as in a pop-out or an
         // embed, may bring an adapter class not yet patched. Only while the
         // overrides are in, so an editor left open after unload stays stock.
-        if (this.patchedVim) this.patchFindPosV(update.view.cm);
+        // The table widget's class is patched once one is drawn.
+        if (this.patchedVim) {
+          this.patchFindPosV(update.view.cm);
+          guarded(patchTableWidget)(update.view, (this.vimRestorers ||= []));
+        }
         if (!update.selectionSet || !visualLineMode(update.view)) return;
         if (!foldExtendedSelection(update.view)) return;
         // Vim is still mid-command here. Adjusting after it finishes makes the

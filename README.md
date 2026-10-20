@@ -8,13 +8,15 @@ The plugin uses Markdown headings as org-mode headlines. A subtree is a heading 
 
 Set **Settings → Editor → Vim key bindings** to on.
 
-The [keys](#keys) operate only in Vim normal mode and Vim visual mode. They do not change insert mode. The [commands](#commands) and [indent mode](#indent-mode) operate in all modes, also when Vim mode is off.
+The [keys](#keys) operate only in Vim normal mode and Vim visual mode. They do not change insert mode, except the [table keys](#tab-shift-tab-and-enter-in-a-table). The [commands](#commands) and [indent mode](#indent-mode) operate in all modes, also when Vim mode is off.
 
 ## Keys
 
 In fenced code blocks and front matter, a line that starts with `#` is not a heading.
 
 ### `Tab`: Fold a heading
+
+In a table, `Tab` moves to the next cell. See [Tab, Shift-Tab, and Enter in a table](#tab-shift-tab-and-enter-in-a-table).
 
 `Tab` changes the fold state of the heading at the cursor (`org-cycle`). The fold states are:
 
@@ -34,6 +36,8 @@ Folded list items and code blocks in the subtree stay folded. On a block that is
 
 ### `Shift-Tab`: Fold the note
 
+In a table, `Shift-Tab` moves to the previous cell.
+
 `Shift-Tab` changes the fold state of all of the note (`org-global-cycle`). The fold states are:
 
 - **Overview**: The editor shows the first heading and the headings after it that are not deeper. All of their text is folded.
@@ -48,10 +52,110 @@ Folded list items and code blocks in the subtree stay folded. On a block that is
 
 Text before the first heading does not change. If the cursor is in text that becomes folded, the cursor moves to the visible line above it.
 
+### `Tab`, `Shift-Tab`, and `Enter` in a table
+
+In a Markdown table, these keys align the table and move the cursor between cells, as in the org-mode table editor:
+
+- `Tab` moves to the next cell (`org-table-next-field`). In the last cell, `Tab` adds an empty row and moves to its first cell.
+- `Shift-Tab` moves to the previous cell (`org-table-previous-field`). In the first cell, the cursor does not move.
+- `Enter` moves to the same column in the next row (`org-table-next-row`). In the last row, `Enter` adds an empty row.
+
+The cursor goes to the start of the text of the cell. The keys skip the delimiter row (`| --- | :-: |`).
+
+To align the table, the plugin pads each cell with spaces, so that the pipes line up:
+
+- Each row gets all of the columns. A row without a closing `|` gets one.
+- The cells of a column align left, right, or center, as the colons of the delimiter row set. A column without colons aligns left.
+- The dashes of the delimiter row fill the width of the column. A column is at least three characters wide, the width of `---`.
+- All rows get the indent of the first row.
+- An escaped pipe (`\|`) is text in its cell.
+- Chinese, Japanese, and Korean characters count as two characters wide.
+
+These keys operate in Vim normal mode and in insert mode, as in evil-org. With a count, `Enter` moves down as in Vim. One `u` undoes one key.
+
+A table is a block of lines that start with `|`. Lines in fenced code blocks are not tables. In Live Preview, the table shows as text when the cursor of Vim is in it (see [Tables in Live Preview](#tables-in-live-preview)).
+
+### `Alt` with `h`, `j`, `k`, `l`, or an arrow: Change a table
+
+In a Markdown table, in Vim normal mode, these keys move, delete, and insert rows and columns, as in the org-mode table editor and evil-org. On macOS, the Alt key is the Option key. Each arrow key does the same as the letter in its direction:
+
+| Key | Arrow key | Change | org-mode command |
+| --- | --- | --- | --- |
+| `Alt-h` | `Alt-←` | Move the column left | `org-table-move-column-left` |
+| `Alt-l` | `Alt-→` | Move the column right | `org-table-move-column-right` |
+| `Alt-k` | `Alt-↑` | Move the row up | `org-table-move-row-up` |
+| `Alt-j` | `Alt-↓` | Move the row down | `org-table-move-row-down` |
+| `Alt-Shift-h` | `Alt-Shift-←` | Delete the column | `org-table-delete-column` |
+| `Alt-Shift-l` | `Alt-Shift-→` | Insert an empty column to the left of the column | `org-table-insert-column` |
+| `Alt-Shift-k` | `Alt-Shift-↑` | Delete the row | `org-table-kill-row` |
+| `Alt-Shift-j` | `Alt-Shift-↓` | Insert an empty row above the row | `org-table-insert-row` |
+
+- The cursor stays in its cell, or goes to the new row or column. After a delete, it goes to the next row or column, or to the previous one at the end.
+- The alignment colons of the delimiter row move and go with their column.
+- A row does not move across the delimiter row. Thus, the header row does not move.
+- The delimiter row does not move and is not deleted. The header row is not deleted, and the last row and last column are not deleted.
+- In the header row and on the delimiter row, `Alt-Shift-j` inserts the row below the delimiter row, because Markdown has only one header row.
+- With a count, the key does the change that number of times, or until it cannot do more.
+- `.` repeats the change. One `u` undoes it. The plugin aligns the table, as `Tab` does.
+
+Off a table, `Alt-j` and `Alt-k` move a subtree (see below), and the other keys do what they did before.
+
+### `yy`, `dd`, `p`, and `P` on a table row
+
+In a Markdown table, in Vim normal mode, these keys copy, delete, and paste table rows, and keep the table valid:
+
+- `yy` copies the row as a line, as in Vim.
+- `dd` deletes the row and aligns the table (`org-table-kill-row`). The row goes to the register as a line, as in Vim. The cursor stays in its column, in the row that takes the place of the deleted row, or in the row above at the end of the table.
+- `p` and `P` put copied or deleted table rows below or above the row at the cursor, and align the table. The rows get the columns of the table. The cursor goes to the first cell of the first new row.
+- With a count, `3yy` and `3dd` stop at the last row of the table, as a count stops at the end of the note. They do not copy or delete the text after the table. `3p` puts three copies of the rows.
+- `dd` does nothing on the delimiter row and on the header row, because a Markdown table needs them. To delete the full table, use `dap` or `dip`, or a count that includes all of the table, such as `9dd` on the header row.
+- `p` and `P` in the header row or on the delimiter row put the rows below the delimiter row.
+- A copied delimiter row is pasted as a row of cells that hold its dashes, because only the first delimiter row is the delimiter row of the table. Its dashes do not fill the column, `Tab` moves into its cells, and `dd` deletes it. The same is true of a row such as `| - | - |` below the delimiter row.
+- Other line deletes in the table, such as `dj`, `dk`, and `Vjd`, delete rows in the same way. If they include the delimiter row or the header row, but not all of the table, they do nothing. A delete that includes lines outside the table, such as `dj` on the last row, is the usual Vim delete.
+- If the register has lines that are not table rows, or the cursor is not on a table row, `p` and `P` paste as usual.
+- `.` repeats `dd`, `p`, and `P`. One `u` undoes each one.
+
+### `i|`, `a|`, and `Ctrl-v` on table cells
+
+In a Markdown table, you can select cells in Vim visual mode, and copy, cut, and paste them, as in the org-mode table editor.
+
+The text objects `i|` and `a|` select the cell at the cursor:
+
+- `i|` is the text of the cell, without the spaces around it.
+- `a|` is the cell with its spaces and the `|` after it. Thus, `da|` deletes the cell from the row.
+- You can use them with all operators (`ci|`, `di|`, `yi|`, `da|`) and in visual mode (`vi|`).
+- On an empty cell, `ci|` starts insert mode in the cell. `di|` and `yi|` do nothing.
+- With a count (`d2a|`), the selection includes that number of cells, from the cell at the cursor to the right.
+- On a `|`, the cell is the cell that the `|` closes. A last cell without a closing `|` goes to the end of the line.
+- Vim Motions has `i|` and `a|` also. The plugin's `i|` does not include the spaces around the text.
+
+A visual block (`Ctrl-v`) in a table selects cells. The block selects all of each cell from the cell of one corner to the cell of the other corner, also when the block covers only part of a cell. Thus, the block selects the same cells in a table that is not aligned. The editor shows the block as Vim draws it, not as cells.
+
+- `y` copies the cells (`org-table-copy-region`).
+- `d` and `x` make the cells empty (`org-table-cut-region`), and align the table. They do not delete rows or columns. The cells go to the register, as with `y`.
+- `D`, `X`, and `Y` do the same, but to the last column of the table.
+- `p` and `P` in normal mode put copied cells into the table (`org-table-paste-rectangle`). The first cell goes into the cell at the cursor. The other cells go to the right and down. They replace the text of the cells there. If the cells go past the last row or column, the plugin adds rows or columns. Then the plugin aligns the table.
+- The delimiter row is not copied, made empty, or pasted into. On the delimiter row, `p` and `P` paste into the row below it.
+- The register gets the cells as text: one line for each row, with a tab between cells. Thus, outside a table, `p` pastes the cells as columns of text. You can also paste them into a spreadsheet.
+- `p` and `P` paste cells only when the register has the text of the most recent cell copy or cut. If the register has other text, `p` and `P` paste as usual.
+- `p` and `P` paste the cells from the Vim register, not from the system clipboard. With `clipboard=unnamed` (Vim Motions), text that you copy in a different app after the cells does not go into the table.
+- One `u` undoes each change. `.` repeats `d` and `x`.
+- If the block includes lines outside the table, the keys operate as usual in Vim. `c`, `>`, `<`, and `p` in visual mode also operate as usual.
+- In visual mode (`v`), the keys operate on the text, as usual. For example, `vey` in a cell copies a word.
+
+### Tables in Live Preview
+
+In Live Preview, Obsidian shows a table in a table editor of its own. Vim does not operate in the cells of that editor: keys such as `u`, `gg`, or `V` are typed into the cell. Thus, when the cursor of Vim is in a table, the plugin shows the table as text, as in Source mode. Then all of the Vim keys operate in the table. When the cursor leaves the table, Obsidian shows its table editor again.
+
+- When you move the cursor into a table, for example with `j`, `k`, `gg`, or a search, the table shows as text.
+- When you click a cell, the cursor of Vim goes to the text of the cell, and the table shows as text. Obsidian's table editor does not open. The drag handles, the menus, and the `+` buttons of the table editor operate as usual, and so do links in a cell.
+- A visual selection that starts or ends in a table shows the table as text.
+- Without Vim, Obsidian's table editor operates as usual.
+
 ### Line commands: `V`, `dd`, `yy`, `cc`, `u`, `p`, `P`
 
 - `V`: When you select a folded heading, the selection includes all of its subtree.
-- `dd`, `yy`, `cc`, `3dd`: The plugin counts a folded heading as one line. Thus, these commands operate on all of the subtree.
+- `dd`, `yy`, `cc`, `3dd`: The plugin counts a folded heading as one line. Thus, these commands operate on all of the subtree. On a table row, see [yy, dd, p, and P on a table row](#yy-dd-p-and-p-on-a-table-row).
 - `u`: When you undo a delete, the deleted headings come back folded.
 - `p` / `P`: These keys put a yanked subtree after or before a folded heading, not in it. Pasted subtrees stay folded (`org-yank-folded-subtrees`).
 
@@ -84,7 +188,7 @@ On a range (`3>>`, `V>`):
 
 ### `Alt-j` / `Alt-k`: Move a subtree, list item, or line
 
-On macOS, the Alt key is the Option key.
+On macOS, the Alt key is the Option key. In a table, these keys move the table row. See [Change a table](#alt-with-h-j-k-l-or-an-arrow-change-a-table).
 
 On a heading, these keys move the subtree down or up, past the next or previous sibling (`M-↓` / `M-↑`):
 
@@ -287,6 +391,10 @@ To install the plugin manually, do these steps:
 Obsidian does not have a public API for its Vim mode. Thus, the plugin uses interfaces that Obsidian does not document. An Obsidian update can stop the plugin. When you disable the plugin, Vim goes back to its standard behavior.
 
 In Vim normal mode, the plugin gets `Alt-j` and `Alt-k` before Obsidian does. Thus, an Obsidian hotkey on `Alt-j` or `Alt-k` does not operate in Vim normal mode.
+
+In a table, in Vim normal mode, the plugin gets `Enter`, and `Alt` with `h`, `l`, an arrow, or `Shift`, before Obsidian and Vim do.
+
+In Live Preview, with Vim, the plugin gets a click on a cell of a table before Obsidian's table editor does (see [Tables in Live Preview](#tables-in-live-preview)).
 
 ## Development
 

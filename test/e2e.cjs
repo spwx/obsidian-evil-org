@@ -43,9 +43,41 @@ class Setting {}
 class MarkdownView {}
 // Obsidian's Live Preview flag; a test that wants Live Preview adds it.
 const editorLivePreviewField = StateField.define({ create: () => true, update: (v) => v });
+// Obsidian's search highlights, as its editor keeps them: marks in a field,
+// added and filtered by effects, one mark for every highlight of a class.
+// A test that wants them adds highlightField.
+const addHighlight = StateEffect.define();
+const filterHighlights = StateEffect.define();
+const highlightMarks = new Map();
+const highlightField = StateField.define({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    deco = deco.map(tr.changes);
+    for (const e of tr.effects) {
+      if (e.is(addHighlight)) deco = deco.update({ add: e.value, sort: true });
+      else if (e.is(filterHighlights)) deco = deco.update({ filter: e.value });
+    }
+    return deco;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+function editorFor(view) {
+  return {
+    cm: view,
+    offsetToPos: (offset) => offset,
+    addHighlights(ranges, cls, removePrevious) {
+      if (!highlightMarks.has(cls)) highlightMarks.set(cls, Decoration.mark({ class: cls }));
+      const mark = highlightMarks.get(cls);
+      const effects = removePrevious ? [filterHighlights.of((from, to, value) => value !== mark)] : [];
+      effects.push(addHighlight.of(ranges.map((r) => mark.range(r.from, r.to))));
+      this.cm.dispatch({ effects });
+    },
+  };
+}
 const app = {
   workspace: {
-    getActiveViewOfType: () => (activeView ? { editor: { cm: activeView } } : null),
+    getActiveViewOfType: () => (activeView ? { editor: editorFor(activeView) } : null),
+    getLeavesOfType: () => (activeView ? [{ view: { editor: editorFor(activeView) } }] : []),
     onLayoutReady: (cb) => cb(),
     on: () => ({}),
     updateOptions: () => {},
@@ -87,6 +119,10 @@ async function keys(view, seq) {
     if (k === "<Tab>" || k === "<S-Tab>") {
       const event = new window.KeyboardEvent("keydown", { key: "Tab", shiftKey: k === "<S-Tab>" });
       runScopeHandlers(view, event, "editor");
+    } else if (k === "<Enter>") {
+      // A real keydown, as the browser sends it: the plugin's capture
+      // listener on the document, then vim's and the keymaps' handlers.
+      view.contentDOM.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true, cancelable: true }));
     } else {
       Vim.handleKey(cm, k, "user");
     }
@@ -1349,6 +1385,145 @@ test("on a table row 2ar and ar again in visual mode are the subtree", async () 
   assert.equal(text(v), "# T\n## U");
 });
 
+// --- org table navigation: Tab, S-Tab and Enter in a table -------------------
+
+// The line and column of the cursor, 1-based line.
+const cursorAt = (view) => {
+  const head = view.state.selection.main.head;
+  const line = view.state.doc.lineAt(head);
+  return [line.number, head - line.from];
+};
+
+const NAV = "# T\n| a | bb |\n|-|:-:|\n| c | d |\n\ntext";
+const NAV_ALIGNED = "# T\n| a   | bb  |\n| --- | :-: |\n| c   |  d  |\n\ntext";
+
+test("Tab in a table aligns it and goes to the next cell, past the delimiter row", async () => {
+  const v = open(NAV);
+  gotoLine(v, 2);
+  await keys(v, "<Tab>");
+  assert.equal(text(v), NAV_ALIGNED);
+  assert.deepEqual(cursorAt(v), [2, 8]);
+  await keys(v, "<Tab>");
+  assert.deepEqual(cursorAt(v), [4, 2]);
+  await keys(v, "<Tab>");
+  assert.deepEqual(cursorAt(v), [4, 9]);
+  assert.deepEqual(foldedLines(v), []);
+});
+
+test("Tab in the last cell adds an empty row and goes to its first cell", async () => {
+  const v = open(NAV);
+  gotoLine(v, 4);
+  await keys(v, "$<Tab>");
+  assert.equal(text(v), "# T\n| a   | bb  |\n| --- | :-: |\n| c   |  d  |\n|     |     |\n\ntext");
+  assert.deepEqual(cursorAt(v), [5, 2]);
+});
+
+test("S-Tab goes to the previous cell, past the delimiter row, and stays in the first", async () => {
+  const v = open(NAV);
+  gotoLine(v, 4);
+  await keys(v, "<S-Tab>");
+  assert.equal(text(v), NAV_ALIGNED);
+  assert.deepEqual(cursorAt(v), [2, 8]);
+  await keys(v, "<S-Tab>");
+  assert.deepEqual(cursorAt(v), [2, 2]);
+  await keys(v, "<S-Tab>");
+  assert.deepEqual(cursorAt(v), [2, 2]);
+  assert.deepEqual(foldedLines(v), []);
+});
+
+test("Tab and Enter go into a later row of dashes, a row of cells like any other", async () => {
+  const v = open("| h | i |\n|---|---|\n| - | - |\n| 1 | 2 |");
+  gotoLine(v, 1);
+  await keys(v, "<Tab>");
+  assert.equal(text(v), "| h   | i   |\n| --- | --- |\n| -   | -   |\n| 1   | 2   |");
+  await keys(v, "<Tab>");
+  assert.deepEqual(cursorAt(v), [3, 2]);
+  await keys(v, "<Tab>");
+  assert.deepEqual(cursorAt(v), [3, 8]);
+  await keys(v, "<S-Tab><Enter>");
+  assert.deepEqual(cursorAt(v), [4, 2]);
+});
+
+test("Enter in a table goes to the same column in the next row, adding a row at the end", async () => {
+  const v = open(NAV);
+  gotoLine(v, 2);
+  await keys(v, "fb<Enter>");
+  assert.equal(text(v), NAV_ALIGNED);
+  assert.deepEqual(cursorAt(v), [4, 9]);
+  await keys(v, "<Enter>");
+  assert.equal(text(v), "# T\n| a   | bb  |\n| --- | :-: |\n| c   |  d  |\n|     |     |\n\ntext");
+  assert.deepEqual(cursorAt(v), [5, 8]);
+});
+
+test("u undoes each table key in one step", async () => {
+  const v = open(NAV);
+  gotoLine(v, 4);
+  await keys(v, "<Enter>");
+  await keys(v, "<Tab>");
+  await keys(v, "<Tab>");
+  assert.equal(v.state.doc.lines, 8);
+  await keys(v, "u");
+  assert.equal(text(v), "# T\n| a   | bb  |\n| --- | :-: |\n| c   |  d  |\n|     |     |\n\ntext");
+  await keys(v, "u");
+  assert.equal(text(v), NAV);
+});
+
+test("Enter outside a table, with a count, or in visual mode is vim's", async () => {
+  // jsdom has no layout, so where vim's `j` lands isn't checked here.
+  let v = open("a\n  b\n| x |\n| y |\n| z |\nc");
+  await keys(v, "<Enter>");
+  assert.notEqual(cursorAt(v)[0], 1);
+  gotoLine(v, 3);
+  await keys(v, "2<Enter>");
+  assert.equal(text(v), "a\n  b\n| x |\n| y |\n| z |\nc");
+  v = open("| x |\n| y |");
+  await keys(v, "v<Tab><Enter><Esc>");
+  assert.equal(text(v), "| x |\n| y |");
+});
+
+test("Tab, S-Tab and Enter in a table work in insert mode too", async () => {
+  const v = open(NAV);
+  gotoLine(v, 2);
+  await keys(v, "a");
+  await keys(v, "<Tab>");
+  type(v, "xyz");
+  await keys(v, "<Tab>");
+  assert.equal(text(v), "# T\n| a   | xyzbb |\n| --- | :---: |\n| c   |   d   |\n\ntext");
+  assert.deepEqual(cursorAt(v), [4, 2]);
+  await keys(v, "<Enter>");
+  assert.deepEqual(cursorAt(v), [5, 2]);
+  await keys(v, "<S-Tab>");
+  assert.deepEqual(cursorAt(v), [4, 10]);
+  assert.ok(insertMode(v));
+});
+
+test("Tab off a table still cycles folds, and a | line in a code block isn't a table", async () => {
+  let v = open("# A\n| x |\n# B\nb");
+  await keys(v, "<Tab>");
+  assert.deepEqual(foldedLines(v), [1]);
+  v = open("```\n| a |  b |\n```");
+  gotoLine(v, 2);
+  await keys(v, "<Tab><Enter>");
+  assert.equal(text(v), "```\n| a |  b |\n```");
+});
+
+test("aligning pads by the delimiter's colons, keeps escaped pipes and indent, and closes rows", async () => {
+  const v = open("  | a | b | c |\n|:-|-:|:-:|\n| long \\| x | 1 |\n| y |no end");
+  await keys(v, "<Tab>");
+  assert.equal(text(v), [
+    "  | a         |      b |  c  |",
+    "  | :-------- | -----: | :-: |",
+    "  | long \\| x |      1 |     |",
+    "  | y         | no end |     |",
+  ].join("\n"));
+});
+
+test("aligning counts wide characters twice and needs no delimiter row", async () => {
+  const v = open("| 漢字 | x |\n| a | bb |");
+  await keys(v, "<Tab>");
+  assert.equal(text(v), "| 漢字 | x  |\n| a    | bb |");
+});
+
 test("ar on a line under a heading that only contains a pipe is still the subtree", async () => {
   const v = open("# T\n## S\na | b\n|\n## U");
   gotoLine(v, 3);
@@ -1358,6 +1533,862 @@ test("ar on a line under a heading that only contains a pipe is still the subtre
   gotoLine(w, 3);
   await keys(w, "dar");
   assert.equal(text(w), "# T\n## U");
+});
+
+// --- org table structure: M-h/j/k/l, the arrows, and their Shift forms -------
+
+// An Alt keydown as the browser sends it, from the plugin's capture listener
+// on: "h", "S-h" (key "H"), "Left", "S-Left". With option, the key macOS
+// gives for Option and that letter, which isn't a letter.
+const ARROW_KEYS = { h: "ArrowLeft", j: "ArrowDown", k: "ArrowUp", l: "ArrowRight" };
+const OPTION_SHIFT_KEYS = { h: "Ó", j: "Ô", k: "", l: "Ò" };
+const ARROW_NAMES = { Left: "h", Down: "j", Up: "k", Right: "l" };
+
+function metaKey(view, name, { option = false } = {}) {
+  const shiftKey = name.startsWith("S-");
+  const base = name.replace(/^S-/, "");
+  const letter = ARROW_NAMES[base] || base;
+  const key = ARROW_NAMES[base] ? ARROW_KEYS[letter]
+    : option ? (shiftKey ? OPTION_SHIFT_KEYS : OPTION_KEYS)[letter]
+    : shiftKey ? letter.toUpperCase() : letter;
+  const code = ARROW_NAMES[base] ? ARROW_KEYS[letter] : `Key${letter.toUpperCase()}`;
+  const event = new window.KeyboardEvent("keydown", {
+    key, code, altKey: true, shiftKey, bubbles: true, cancelable: true,
+  });
+  let reached = false;
+  const spy = () => { reached = true; };
+  view.contentDOM.addEventListener("keydown", spy);
+  view.contentDOM.dispatchEvent(event);
+  view.contentDOM.removeEventListener("keydown", spy);
+  event.reachedEditor = reached;
+  return event;
+}
+
+async function metaKeys(view, names, options) {
+  for (const name of names.split(" ")) {
+    if (/^\d+$/.test(name)) await keys(view, name);
+    else metaKey(view, name, options);
+    await tick();
+  }
+}
+
+const TBL = "# T\n| a | b | c |\n|:-|-:|---|\n| 1 | 2 | 3 |\n| 4 | 5 | 6 |\n\ntext";
+const tableLines = (view) => text(view).split("\n").filter((l) => l.startsWith("|"));
+
+// The cursor on line n, in the cell holding text t.
+function gotoCell(view, n, t) {
+  const line = view.state.doc.line(n);
+  view.dispatch({ selection: { anchor: line.from + line.text.indexOf(t) } });
+}
+
+test("M-h and M-l move the column, its alignment and the cursor with it", async () => {
+  const v = open(TBL);
+  gotoCell(v, 4, "2");
+  await metaKeys(v, "l");
+  assert.deepEqual(tableLines(v), [
+    "| a   | c   |   b |",
+    "| :-- | --- | --: |",
+    "| 1   | 3   |   2 |",
+    "| 4   | 6   |   5 |",
+  ]);
+  assert.deepEqual(cursorAt(v), [4, 16]);
+  await metaKeys(v, "h h");
+  assert.deepEqual(tableLines(v), [
+    "|   b | a   | c   |",
+    "| --: | :-- | --- |",
+    "|   2 | 1   | 3   |",
+    "|   5 | 4   | 6   |",
+  ]);
+  assert.deepEqual(cursorAt(v), [4, 4]);
+});
+
+test("M-← and M-→ move the column; it stops at either edge", async () => {
+  const v = open(TBL);
+  gotoCell(v, 2, "a");
+  await metaKeys(v, "Left");
+  assert.equal(text(v), TBL);
+  await metaKeys(v, "Right Right Right");
+  assert.deepEqual(tableLines(v)[0], "|   b | c   | a   |");
+  assert.deepEqual(cursorAt(v), [2, 14]);
+});
+
+test("a count moves the column that many places, as far as it can", async () => {
+  const v = open(TBL);
+  gotoCell(v, 2, "a");
+  await metaKeys(v, "2 l");
+  assert.deepEqual(tableLines(v)[0], "|   b | c   | a   |");
+  await metaKeys(v, "5 h");
+  assert.deepEqual(tableLines(v)[0], "| a   |   b | c   |");
+});
+
+test("M-j and M-k move the row, but not across the delimiter row", async () => {
+  const v = open(TBL);
+  gotoCell(v, 4, "2");
+  await metaKeys(v, "j");
+  assert.deepEqual(tableLines(v), [
+    "| a   |   b | c   |",
+    "| :-- | --: | --- |",
+    "| 4   |   5 | 6   |",
+    "| 1   |   2 | 3   |",
+  ]);
+  assert.deepEqual(cursorAt(v), [5, 10]);
+  await metaKeys(v, "j");
+  assert.deepEqual(cursorAt(v), [5, 10]);
+  await metaKeys(v, "k k");
+  assert.deepEqual(tableLines(v)[2], "| 1   |   2 | 3   |");
+  assert.deepEqual(cursorAt(v), [4, 10]);
+  gotoCell(v, 2, "a");
+  await metaKeys(v, "j");
+  assert.deepEqual(tableLines(v)[0], "| a   |   b | c   |");
+  gotoLine(v, 3);
+  await metaKeys(v, "k j");
+  assert.deepEqual(tableLines(v)[1], "| :-- | --: | --- |");
+});
+
+test("M-j and M-k move a later row of dashes, and other rows across it", async () => {
+  const v = open("| h |\n|---|\n| 1 |\n| - |\n| 2 |");
+  gotoLine(v, 3);
+  await keys(v, "2<A-j>");
+  assert.equal(text(v), "| h   |\n| --- |\n| -   |\n| 2   |\n| 1   |");
+  assert.deepEqual(cursorAt(v), [5, 2]);
+  gotoLine(v, 3);
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "| h   |\n| --- |\n| 2   |\n| -   |\n| 1   |");
+  assert.deepEqual(cursorAt(v), [4, 2]);
+});
+
+test("M-↓ and M-↑ move the row; 2<A-k> moves it two rows, . repeats", async () => {
+  const v = open("| h |\n|---|\n| 1 |\n| 2 |\n| 3 |\n| 4 |");
+  gotoLine(v, 3);
+  await metaKeys(v, "Down");
+  assert.equal(text(v), "| h   |\n| --- |\n| 2   |\n| 1   |\n| 3   |\n| 4   |");
+  gotoLine(v, 6);
+  await keys(v, "2<A-k>");
+  assert.equal(text(v), "| h   |\n| --- |\n| 2   |\n| 4   |\n| 1   |\n| 3   |");
+  assert.deepEqual(cursorAt(v), [4, 2]);
+  await metaKeys(v, "Up");
+  await keys(v, ".");
+  assert.equal(text(v), "| h   |\n| --- |\n| 4   |\n| 2   |\n| 1   |\n| 3   |");
+});
+
+test("a table without a delimiter row moves any row", async () => {
+  const v = open("| a |\n| b |");
+  gotoLine(v, 2);
+  await metaKeys(v, "k");
+  assert.equal(text(v), "| b |\n| a |");
+  assert.deepEqual(cursorAt(v), [1, 2]);
+});
+
+test("M-S-h deletes the column, its alignment too; the last column stays", async () => {
+  const v = open(TBL);
+  gotoCell(v, 4, "2");
+  await metaKeys(v, "S-h");
+  assert.deepEqual(tableLines(v), ["| a   | c   |", "| :-- | --- |", "| 1   | 3   |", "| 4   | 6   |"]);
+  assert.deepEqual(cursorAt(v), [4, 8]);
+  await metaKeys(v, "S-Left");
+  assert.deepEqual(tableLines(v), ["| a   |", "| :-- |", "| 1   |", "| 4   |"]);
+  assert.deepEqual(cursorAt(v), [4, 2]);
+  await metaKeys(v, "S-h");
+  assert.deepEqual(tableLines(v), ["| a   |", "| :-- |", "| 1   |", "| 4   |"]);
+});
+
+test("M-S-l inserts an empty column left of the cursor's and goes to it", async () => {
+  const v = open(TBL);
+  gotoCell(v, 4, "2");
+  await metaKeys(v, "S-l");
+  assert.deepEqual(tableLines(v), [
+    "| a   |     |   b | c   |",
+    "| :-- | --- | --: | --- |",
+    "| 1   |     |   2 | 3   |",
+    "| 4   |     |   5 | 6   |",
+  ]);
+  assert.deepEqual(cursorAt(v), [4, 8]);
+  await metaKeys(v, "2 S-Right");
+  assert.deepEqual(tableLines(v)[0], "| a   |     |     |     |   b | c   |");
+  assert.deepEqual(cursorAt(v), [4, 8]);
+});
+
+test("M-S-k deletes the row; never the delimiter row or the only header row", async () => {
+  const v = open(TBL);
+  gotoCell(v, 4, "2");
+  await metaKeys(v, "S-k");
+  assert.deepEqual(tableLines(v), ["| a   |   b | c   |", "| :-- | --: | --- |", "| 4   |   5 | 6   |"]);
+  assert.deepEqual(cursorAt(v), [4, 10]);
+  await metaKeys(v, "S-Up");
+  assert.deepEqual(tableLines(v), ["| a   |   b | c   |", "| :-- | --: | --- |"]);
+  assert.deepEqual(cursorAt(v), [3, 8]);
+  assert.equal(text(v), "# T\n| a   |   b | c   |\n| :-- | --: | --- |\n\ntext");
+  await metaKeys(v, "S-k");
+  gotoLine(v, 2);
+  await metaKeys(v, "S-k");
+  assert.equal(text(v), "# T\n| a   |   b | c   |\n| :-- | --: | --- |\n\ntext");
+});
+
+test("M-S-k at the end goes up a row; with a count it deletes that many", async () => {
+  let v = open(TBL);
+  gotoCell(v, 5, "5");
+  await metaKeys(v, "S-k");
+  assert.deepEqual(cursorAt(v), [4, 10]);
+  v = open("| h |\n|---|\n| 1 |\n| 2 |\n| 3 |\n| 4 |");
+  gotoLine(v, 4);
+  await metaKeys(v, "2 S-k");
+  assert.equal(text(v), "| h   |\n| --- |\n| 1   |\n| 4   |");
+  v = open("| a |\n| b |");
+  await metaKeys(v, "S-k S-k");
+  assert.equal(text(v), "| b |");
+});
+
+test("M-S-j inserts an empty row above the cursor's, or below the header", async () => {
+  const v = open(TBL);
+  gotoCell(v, 5, "5");
+  await metaKeys(v, "S-j");
+  assert.deepEqual(tableLines(v), [
+    "| a   |   b | c   |",
+    "| :-- | --: | --- |",
+    "| 1   |   2 | 3   |",
+    "|     |     |     |",
+    "| 4   |   5 | 6   |",
+  ]);
+  assert.deepEqual(cursorAt(v), [5, 8]);
+  gotoCell(v, 2, "a");
+  await metaKeys(v, "S-Down");
+  assert.deepEqual(tableLines(v).slice(0, 3), ["| a   |   b | c   |", "| :-- | --: | --- |", "|     |     |     |"]);
+  assert.deepEqual(cursorAt(v), [4, 2]);
+  gotoLine(v, 3);
+  await metaKeys(v, "2 S-j");
+  assert.equal(tableLines(v).length, 8);
+  assert.deepEqual(cursorAt(v), [4, 2]);
+});
+
+test("u undoes each table edit in one step", async () => {
+  const v = open(TBL);
+  gotoCell(v, 4, "2");
+  await metaKeys(v, "l S-j S-h");
+  await keys(v, "uuu");
+  assert.equal(text(v), TBL);
+});
+
+test("macOS Option keys, with and without Shift, edit the table", async () => {
+  const v = open(TBL);
+  gotoCell(v, 4, "2");
+  const event = metaKey(v, "l", { option: true });
+  await tick();
+  assert.ok(event.defaultPrevented);
+  assert.ok(!event.reachedEditor);
+  assert.deepEqual(tableLines(v)[2], "| 1   | 3   |   2 |");
+  await metaKeys(v, "S-l S-h j", { option: true });
+  assert.deepEqual(tableLines(v).slice(2), ["| 4   | 6   |   5 |", "| 1   | 3   |   2 |"]);
+});
+
+test("off a table, Alt-h/l, the Alt arrows and the Shift forms are left alone", async () => {
+  const v = open("## A\n## B\nx | y");
+  for (const name of ["h", "l", "Left", "Right", "Up", "Down", "S-h", "S-j", "S-k", "S-l", "S-Left", "S-Down"]) {
+    const event = metaKey(v, name);
+    await tick();
+    assert.ok(!event.defaultPrevented, name);
+    assert.ok(event.reachedEditor, name);
+  }
+  assert.equal(text(v), "## A\n## B\nx | y");
+  metaKey(v, "j");
+  await tick();
+  assert.equal(text(v), "## B\nx | y\n## A");
+});
+
+test("in a table, the table keys are left alone in insert and visual mode", async () => {
+  const v = open(TBL);
+  gotoCell(v, 4, "2");
+  await keys(v, "i");
+  let event = metaKey(v, "l");
+  assert.ok(event.reachedEditor);
+  await keys(v, "<Esc>v");
+  event = metaKey(v, "S-k");
+  assert.ok(event.reachedEditor);
+  await keys(v, "<Esc>");
+  assert.equal(text(v), TBL);
+});
+
+// In Live Preview a table's cells are editors of their own, inside the
+// note's editor; a keydown in one has that editor's content as its target.
+test("in a table, Alt keys from inside the editor but not its content are left alone", async () => {
+  const v = open(TBL);
+  gotoCell(v, 4, "2");
+  const cellEditor = document.createElement("div");
+  v.dom.appendChild(cellEditor);
+  for (const [key, code] of [["∆", "KeyJ"], ["¬", "KeyL"], ["ArrowUp", "ArrowUp"]]) {
+    const event = new window.KeyboardEvent("keydown", { key, code, altKey: true, bubbles: true, cancelable: true });
+    cellEditor.dispatchEvent(event);
+    await tick();
+    assert.ok(!event.defaultPrevented, key);
+  }
+  assert.equal(text(v), TBL);
+});
+
+test("M-j in a table under a heading moves the row, not the subtree", async () => {
+  const v = open("## A\n| x |\n| y |\n## B");
+  gotoLine(v, 2);
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "## A\n| y |\n| x |\n## B");
+  gotoLine(v, 1);
+  await keys(v, "<A-j>");
+  assert.equal(text(v), "## B\n## A\n| y |\n| x |");
+});
+
+// --- yy, dd, p and P on table rows -------------------------------------------
+
+const unnamed = () => Vim.getRegisterController().getRegister('"');
+
+test("yy yanks a row as a line, and p and P paste it as a row and align the table", async () => {
+  const v = open(TBL);
+  gotoCell(v, 4, "2");
+  await keys(v, "yy");
+  assert.equal(unnamed().toString(), "| 1 | 2 | 3 |\n");
+  assert.ok(unnamed().linewise);
+  gotoLine(v, 5);
+  await keys(v, "p");
+  assert.deepEqual(tableLines(v), [
+    "| a   |   b | c   |",
+    "| :-- | --: | --- |",
+    "| 1   |   2 | 3   |",
+    "| 4   |   5 | 6   |",
+    "| 1   |   2 | 3   |",
+  ]);
+  assert.deepEqual(cursorAt(v), [6, 2]);
+  gotoLine(v, 4);
+  await keys(v, "P");
+  assert.deepEqual(tableLines(v).slice(2, 4), ["| 1   |   2 | 3   |", "| 1   |   2 | 3   |"]);
+  assert.deepEqual(cursorAt(v), [4, 2]);
+  assert.ok(text(v).endsWith("\n\ntext"));
+});
+
+test("p and P in the header or on the delimiter row paste below the delimiter row", async () => {
+  for (const [line, key] of [[2, "p"], [2, "P"], [3, "p"], [3, "P"]]) {
+    const v = open(TBL);
+    gotoLine(v, 5);
+    await keys(v, "yy");
+    gotoLine(v, line);
+    await keys(v, key);
+    assert.deepEqual(tableLines(v).slice(0, 4), [
+      "| a   |   b | c   |",
+      "| :-- | --: | --- |",
+      "| 4   |   5 | 6   |",
+      "| 1   |   2 | 3   |",
+    ], `${key} on line ${line}`);
+    assert.deepEqual(cursorAt(v), [4, 2]);
+  }
+});
+
+test("a row pasted from another table takes this table's columns; a count pastes copies", async () => {
+  const v = open("| x | y |\n|---|---|\n| long one | z |\n\n| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |");
+  gotoLine(v, 3);
+  await keys(v, "yy");
+  gotoLine(v, 7);
+  await keys(v, "2p");
+  assert.deepEqual(text(v).split("\n").slice(4), [
+    "| a        | b   | c   |",
+    "| -------- | --- | --- |",
+    "| 1        | 2   | 3   |",
+    "| long one | z   |     |",
+    "| long one | z   |     |",
+  ]);
+  await keys(v, "u");
+  assert.equal(text(v).split("\n").slice(4).join("\n"), "| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |");
+});
+
+test("p of lines that aren't all table rows, or off a table, is vim's paste", async () => {
+  let v = open("text\n| a |\n|---|\n| 1 |");
+  gotoLine(v, 1);
+  await keys(v, "yy");
+  gotoLine(v, 4);
+  await keys(v, "p");
+  assert.equal(text(v), "text\n| a |\n|---|\n| 1 |\ntext");
+  v = open("| a |\n|---|\n| 1 |\n\ntext");
+  gotoLine(v, 3);
+  await keys(v, "yy");
+  gotoLine(v, 5);
+  await keys(v, "p");
+  assert.equal(text(v), "| a |\n|---|\n| 1 |\n\ntext\n| 1 |");
+});
+
+test("dd deletes the row, aligns the table, and p puts the row back", async () => {
+  const v = open("| h | x |\n|---|:-:|\n| long cell | 1 |\n| 2 | 3 |\n\ntext");
+  gotoCell(v, 3, "1");
+  await keys(v, "dd");
+  assert.equal(text(v), "| h   |  x  |\n| --- | :-: |\n| 2   |  3  |\n\ntext");
+  assert.deepEqual(cursorAt(v), [3, 9]);
+  assert.equal(unnamed().toString(), "| long cell | 1 |\n");
+  assert.ok(unnamed().linewise);
+  assert.equal(Vim.getRegisterController().getRegister("1").toString(), "| long cell | 1 |\n");
+  await keys(v, "P");
+  assert.equal(text(v), "| h         |  x  |\n| --------- | :-: |\n| long cell |  1  |\n| 2         |  3  |\n\ntext");
+  await keys(v, "uu");
+  assert.equal(text(v), "| h | x |\n|---|:-:|\n| long cell | 1 |\n| 2 | 3 |\n\ntext");
+});
+
+test("dd on the last row goes up a row; on the only body row it leaves the header", async () => {
+  const v = open(TBL);
+  gotoCell(v, 5, "5");
+  await keys(v, "dd");
+  assert.deepEqual(cursorAt(v), [4, 10]);
+  await keys(v, "dd");
+  assert.equal(text(v), "# T\n| a   |   b | c   |\n| :-- | --: | --- |\n\ntext");
+  assert.deepEqual(cursorAt(v), [3, 8]);
+});
+
+test("dd on the delimiter row or the only header row does nothing", async () => {
+  const v = open(TBL);
+  unnamed().setText("kept");
+  for (const line of [2, 3]) {
+    gotoLine(v, line);
+    await keys(v, "dd");
+    assert.equal(text(v), TBL);
+    assert.deepEqual(cursorAt(v), [line, 0]);
+  }
+  gotoLine(v, 2);
+  await keys(v, "2dd");
+  gotoLine(v, 3);
+  await keys(v, "ma");
+  gotoLine(v, 4);
+  await keys(v, "d'aV'ad");
+  assert.equal(text(v), TBL);
+  assert.equal(unnamed().toString(), "kept");
+});
+
+test("a count stops at the table's last row; dd over the whole table deletes it", async () => {
+  let v = open("| h |\n|---|\n| 1 |\n| 2 |\n| 3 |\n\ntext");
+  gotoLine(v, 4);
+  await keys(v, "9yy");
+  assert.equal(unnamed().toString(), "| 2 |\n| 3 |\n");
+  await keys(v, "9dd");
+  assert.equal(text(v), "| h   |\n| --- |\n| 1   |\n\ntext");
+  assert.equal(unnamed().toString(), "| 2 |\n| 3 |\n");
+  await keys(v, "u");
+  assert.equal(text(v), "| h |\n|---|\n| 1 |\n| 2 |\n| 3 |\n\ntext");
+  gotoLine(v, 1);
+  await keys(v, "9dd");
+  assert.equal(text(v), "\ntext");
+  v = open("| a |\n\ntext");
+  await keys(v, "dd");
+  assert.equal(text(v), "\ntext");
+});
+
+// jsdom has no layout for j and k, so these tests make linewise ranges with
+// marks: `d'a` is a linewise delete to mark a, as dj or dk would be.
+test("d to a line in the table or Vd delete rows and align; d past the table is vim's delete", async () => {
+  let v = open("| h |\n|---|\n| 1 |\n| long |\n| 3 |\ntext");
+  gotoLine(v, 4);
+  await keys(v, "ma");
+  gotoLine(v, 3);
+  await keys(v, "d'a");
+  assert.equal(text(v), "| h   |\n| --- |\n| 3   |\ntext");
+  await keys(v, "u");
+  gotoLine(v, 4);
+  await keys(v, "ma");
+  gotoLine(v, 3);
+  await keys(v, "V'ad");
+  assert.equal(text(v), "| h   |\n| --- |\n| 3   |\ntext");
+  await keys(v, "u");
+  gotoLine(v, 6);
+  await keys(v, "ma");
+  gotoLine(v, 5);
+  await keys(v, "d'a");
+  assert.equal(text(v), "| h |\n|---|\n| 1 |\n| long |");
+  v = open("a\n\n| h |\n|---|\n| 1 |\n\nb");
+  gotoLine(v, 4);
+  await keys(v, "dap");
+  assert.equal(text(v), "a\n\nb");
+});
+
+test("a pasted delimiter row is a row: dd deletes it", async () => {
+  const v = open(TBL);
+  gotoLine(v, 3);
+  await keys(v, "yy");
+  gotoLine(v, 4);
+  await keys(v, "p");
+  assert.deepEqual(tableLines(v).slice(1, 5), [
+    "| :-- | --: | --- |", "| 1   |   2 | 3   |", "| :-  |  -: | --- |", "| 4   |   5 | 6   |",
+  ]);
+  assert.deepEqual(cursorAt(v), [5, 2]);
+  await keys(v, "dd");
+  assert.deepEqual(tableLines(v).slice(1), ["| :-- | --: | --- |", "| 1   |   2 | 3   |", "| 4   |   5 | 6   |"]);
+});
+
+test(". repeats dd and p on table rows", async () => {
+  const v = open("| h |\n|---|\n| 1 |\n| 2 |\n| 3 |\n| 4 |");
+  gotoLine(v, 3);
+  await keys(v, "dd.");
+  assert.equal(text(v), "| h   |\n| --- |\n| 3   |\n| 4   |");
+  await keys(v, "p.");
+  assert.equal(text(v), "| h   |\n| --- |\n| 3   |\n| 2   |\n| 2   |\n| 4   |");
+});
+
+// --- table cells: i| / a| and visual blocks -----------------------------------
+
+const CELLS = "| a | bb | c |\n|---|----|---|\n|  one two  | x | y |\n| 1 |  | 3 |\n\ntext";
+
+test("di| deletes a cell's text without its padding, da| the cell and its closing pipe", async () => {
+  let v = open(CELLS);
+  gotoCell(v, 3, "two");
+  await keys(v, "di|");
+  assert.equal(v.state.doc.line(3).text, "|    | x | y |");
+  assert.equal(unnamed().toString(), "one two");
+  await keys(v, "u");
+  await keys(v, "da|");
+  assert.equal(v.state.doc.line(3).text, "| x | y |");
+  // On a pipe: the cell it closes. On the last cell of a row without a
+  // closing pipe: to the end of the line.
+  v = open("| a | b | c");
+  v.dispatch({ selection: { anchor: 4 } });
+  await keys(v, "da|");
+  assert.equal(text(v), "| b | c");
+  gotoCell(v, 1, "c");
+  await keys(v, "da|");
+  assert.equal(text(v), "| b |");
+});
+
+test("ci| changes the cell's text, also an empty cell; yi| yanks it; a count takes more cells", async () => {
+  const v = open(CELLS);
+  gotoCell(v, 3, "x");
+  await keys(v, "ci|");
+  type(v, "new");
+  await keys(v, "<Esc>");
+  assert.equal(v.state.doc.line(3).text, "|  one two  | new | y |");
+  v.dispatch({ selection: { anchor: v.state.doc.line(4).from + 6 } });
+  await keys(v, "ci|");
+  type(v, "2");
+  await keys(v, "<Esc>");
+  assert.equal(v.state.doc.line(4).text, "| 1 | 2 | 3 |");
+  gotoCell(v, 4, "1");
+  await keys(v, "yi|");
+  assert.equal(unnamed().toString(), "1");
+  await keys(v, "y2i|");
+  assert.equal(unnamed().toString(), "1 | 2");
+  await keys(v, "d2a|");
+  assert.equal(v.state.doc.line(4).text, "| 3 |");
+});
+
+test("di| on an empty cell or off a table does nothing; vi| and va| select the cell", async () => {
+  let v = open(CELLS);
+  unnamed().setText("kept");
+  v.dispatch({ selection: { anchor: v.state.doc.line(4).from + 6 } });
+  await keys(v, "di|");
+  gotoLine(v, 6);
+  await keys(v, "di|da|");
+  assert.equal(text(v), CELLS);
+  assert.equal(unnamed().toString(), "kept");
+  gotoCell(v, 3, "one");
+  await keys(v, "vi|y");
+  assert.equal(unnamed().toString(), "one two");
+  assert.ok(!unnamed().blockwise);
+  gotoCell(v, 3, "one");
+  await keys(v, "va|d");
+  assert.equal(v.state.doc.line(3).text, "| x | y |");
+});
+
+test("v inside a cell yanks and deletes text as usual", async () => {
+  const v = open(CELLS);
+  gotoCell(v, 3, "one");
+  await keys(v, "vey");
+  assert.equal(unnamed().toString(), "one");
+  await keys(v, "vlld");
+  assert.equal(v.state.doc.line(3).text, "|   two  | x | y |");
+});
+
+// The block goes from the cursor to mark a: jsdom has no layout for j and k.
+async function block(view, from, to, keySeq) {
+  gotoCell(view, ...to);
+  await keys(view, "ma");
+  gotoCell(view, ...from);
+  await keys(view, "<C-v>`a" + keySeq);
+}
+
+test("Ctrl-v y in a table copies the cells, past the delimiter row, as tab-separated text", async () => {
+  const v = open(CELLS);
+  await block(v, [1, "bb"], [4, "3"], "y");
+  assert.equal(unnamed().toString(), "bb\tc\nx\ty\n\t3");
+  assert.ok(unnamed().blockwise);
+  assert.equal(text(v), CELLS);
+  assert.deepEqual(cursorAt(v), [1, 6]);
+  // Only the corners count: the cells they are in, in a table that isn't aligned.
+  await block(v, [4, "1"], [3, "one"], "y");
+  assert.equal(unnamed().toString(), "one two\n1");
+});
+
+test("Ctrl-v d and x in a table blank the cells, align it, and u undoes it in one step", async () => {
+  const v = open(CELLS);
+  await block(v, [3, "x"], [4, "3"], "d");
+  assert.equal(text(v), [
+    "| a       | bb  | c   |",
+    "| ------- | --- | --- |",
+    "| one two |     |     |",
+    "| 1       |     |     |",
+    "",
+    "text",
+  ].join("\n"));
+  assert.deepEqual(cursorAt(v), [3, 12]);
+  assert.equal(unnamed().toString(), "x\ty\n\t3");
+  assert.ok(unnamed().blockwise);
+  await keys(v, "u");
+  assert.equal(text(v), CELLS);
+  await block(v, [1, "a"], [3, "one"], "x");
+  assert.deepEqual(text(v).split("\n").slice(0, 3), ["|     | bb  | c   |", "| --- | --- | --- |", "|     | x   | y   |"]);
+  assert.deepEqual(cursorAt(v), [1, 2]);
+});
+
+test("Ctrl-v D, X and Y in a table take the cells to the end of the row", async () => {
+  const v = open(CELLS);
+  await block(v, [3, "x"], [3, "x"], "Y");
+  assert.equal(unnamed().toString(), "x\ty");
+  assert.ok(!unnamed().linewise);
+  await block(v, [4, "1"], [4, "1"], "D");
+  assert.equal(v.state.doc.line(4).text, "|         |     |     |");
+  await keys(v, "u");
+  await block(v, [3, "one"], [3, "one"], "X");
+  assert.equal(v.state.doc.line(3).text, "|     |     |     |");
+});
+
+test("p puts copied cells over the cells from the cursor's, adding rows and columns", async () => {
+  const v = open(CELLS);
+  await block(v, [1, "bb"], [3, "y"], "y");
+  gotoCell(v, 4, "3");
+  await keys(v, "p");
+  assert.equal(text(v), [
+    "| a       | bb  | c   |     |",
+    "| ------- | --- | --- | --- |",
+    "| one two | x   | y   |     |",
+    "| 1       |     | bb  | c   |",
+    "|         |     | x   | y   |",
+    "",
+    "text",
+  ].join("\n"));
+  assert.deepEqual(cursorAt(v), [4, 18]);
+  await keys(v, "u");
+  assert.equal(text(v), CELLS);
+});
+
+test("p on the delimiter row pastes from the row below it; P pastes as p does", async () => {
+  for (const key of ["p", "P"]) {
+    const v = open(CELLS);
+    await block(v, [4, "3"], [4, "3"], "y");
+    gotoLine(v, 2);
+    await keys(v, key);
+    assert.equal(v.state.doc.line(3).text, "| 3   | x   | y   |", key);
+  }
+});
+
+test("copied cells paste as tab-separated columns outside a table", async () => {
+  const v = open(CELLS);
+  await block(v, [3, "x"], [4, "3"], "y");
+  gotoLine(v, 5);
+  await keys(v, "P");
+  // Vim's block paste; in jsdom, without layout, it puts only the first line.
+  assert.equal(v.state.doc.line(5).text, "x\ty");
+});
+
+test("a block yanked off a table, or reaching past it, is vim's; it pastes as text in a table", async () => {
+  const v = open(CELLS);
+  await block(v, [4, "1"], [6, "text"], "y");
+  // Vim's own block yank (in jsdom, without layout, only the last line's part).
+  assert.ok(!unnamed().toString().includes("\t"));
+  const yanked = unnamed().toString();
+  await block(v, [6, "t"], [6, "x"], "d");
+  assert.equal(text(v), CELLS.replace("text", "t"));
+  gotoCell(v, 4, "3");
+  await keys(v, "p");
+  assert.equal(v.state.doc.line(4).text, `| 1 |  | 3${yanked} |`);
+});
+
+test("Ctrl-v d on the delimiter row alone does nothing; . repeats a block delete", async () => {
+  const v = open(CELLS);
+  unnamed().setText("kept");
+  await block(v, [2, "---"], [2, "----"], "d");
+  assert.equal(text(v), CELLS);
+  assert.equal(unnamed().toString(), "kept");
+  await block(v, [3, "x"], [3, "x"], "d");
+  gotoCell(v, 4, "1");
+  await keys(v, ".");
+  assert.deepEqual(text(v).split("\n").slice(2, 4), ["| one two |     | y   |", "|         |     | 3   |"]);
+});
+
+// --- tables as text in Live Preview -----------------------------------------------
+
+const LP = "above\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\nbelow";
+
+function openLP(doc, extra = []) {
+  const v = open(doc, [highlightField, extra]);
+  plugin.installVimOverrides();
+  return v;
+}
+
+// The search highlights: [from, to, class].
+function highlights(view) {
+  const out = [];
+  const it = view.state.field(highlightField).iter();
+  for (; it.value; it.next()) out.push([it.from, it.to, it.value.spec.class]);
+  return out;
+}
+
+const breakAfter = (view, n) => [view.state.doc.line(n).to, view.state.doc.line(n).to + 1, "obsidian-search-match-highlight"];
+
+test("in a table the line break after it gets a search highlight, taken off when the cursor leaves", async () => {
+  const v = openLP(LP);
+  assert.deepEqual(highlights(v), []);
+  gotoLine(v, 4);
+  assert.deepEqual(highlights(v), [breakAfter(v, 5)]);
+  gotoLine(v, 3);
+  assert.deepEqual(highlights(v), [breakAfter(v, 5)]);
+  await keys(v, "G");
+  assert.deepEqual(highlights(v), []);
+});
+
+test("a visual selection that starts in a table keeps it as text", async () => {
+  const v = openLP(LP);
+  gotoLine(v, 5);
+  await keys(v, "V");
+  v.dispatch({ selection: { anchor: v.state.doc.line(5).from, head: v.state.doc.line(7).to } });
+  assert.deepEqual(highlights(v), [breakAfter(v, 5)]);
+});
+
+test("a table at the end of the note gets the line break before it; a whole-note table none", async () => {
+  let v = openLP("above\n| a |\n| - |");
+  gotoLine(v, 3);
+  assert.deepEqual(highlights(v), [[5, 6, "obsidian-search-match-highlight"]]);
+  v = openLP("| a |\n| - |");
+  gotoLine(v, 2);
+  assert.deepEqual(highlights(v), []);
+});
+
+test("editing the table keeps one highlight on its line break", async () => {
+  const v = openLP(LP);
+  gotoCell(v, 5, "2");
+  await keys(v, "x");
+  assert.equal(text(v).split("\n")[4], "| 1 |  |");
+  assert.deepEqual(highlights(v), [breakAfter(v, 5)]);
+  await keys(v, "dd");
+  assert.deepEqual(highlights(v), [breakAfter(v, 4)]);
+});
+
+test("the highlight is put back when Obsidian clears its search highlights, and the user's are kept", async () => {
+  const v = openLP(LP);
+  gotoLine(v, 4);
+  editorFor(v).addHighlights([{ from: 0, to: 5 }], "obsidian-search-match-highlight", false);
+  assert.equal(highlights(v).length, 2);
+  v.dispatch({ effects: filterHighlights.of(() => false) });
+  assert.deepEqual(highlights(v), [breakAfter(v, 5)]);
+  editorFor(v).addHighlights([{ from: 0, to: 5 }], "obsidian-search-match-highlight", false);
+  gotoLine(v, 1);
+  assert.deepEqual(highlights(v), [[0, 5, "obsidian-search-match-highlight"]]);
+});
+
+// Live Preview's table widget: a table of the rows but the delimiter row.
+class CellsWidget extends WidgetType {
+  toDOM() {
+    const el = document.createElement("div");
+    el.className = "cm-embed-block cm-table-widget";
+    el.innerHTML = "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody><tr><td>1</td><td><div class='table-cell-wrapper'><div class='cell-editor' tabindex='0'>2</div></div></td></tr></tbody></table>";
+    return el;
+  }
+}
+const cellsField = StateField.define({
+  create: (state) => Decoration.set(Decoration.replace({ widget: new CellsWidget(), block: true })
+    .range(state.doc.line(3).from, state.doc.line(5).to)),
+  update: (deco, tr) => deco.map(tr.changes),
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+function press(el, type) {
+  const event = new window.MouseEvent(type, { bubbles: true, cancelable: true, button: 0 });
+  el.dispatchEvent(event);
+  return event;
+}
+
+test("a click on a table widget's cell puts vim's cursor on the cell's text", async () => {
+  const v = openLP(LP, [cellsField]);
+  const cell = v.contentDOM.querySelector(".table-cell-wrapper");
+  const events = ["pointerdown", "mousedown", "click"].map((type) => press(cell, type));
+  assert.ok(events.every((e) => e.defaultPrevented));
+  assert.equal(v.state.selection.main.head, v.state.doc.line(5).from + 6);
+  assert.deepEqual(highlights(v), [breakAfter(v, 5)]);
+  press(v.contentDOM.querySelector("th"), "pointerdown");
+  assert.equal(v.state.selection.main.head, v.state.doc.line(3).from + 2);
+});
+
+test("a table widget that focuses a cell by itself gives the focus back to the editor", async () => {
+  const v = openLP(LP, [cellsField]);
+  v.contentDOM.querySelector(".cell-editor").focus();
+  assert.equal(document.activeElement, v.contentDOM);
+  const plain = new EditorView({
+    parent: document.body,
+    state: EditorState.create({ doc: LP, extensions: [highlightField, cellsField] }),
+  });
+  try {
+    const cell = plain.contentDOM.querySelector(".cell-editor");
+    cell.focus();
+    assert.equal(document.activeElement, cell);
+  } finally {
+    plain.destroy();
+  }
+});
+
+test("a click outside a cell or in an editor without vim is left alone", async () => {
+  const plain = new EditorView({
+    parent: document.body,
+    state: EditorState.create({ doc: LP, extensions: [highlightField, cellsField] }),
+  });
+  try {
+    assert.ok(!press(plain.contentDOM.querySelector("td"), "pointerdown").defaultPrevented);
+  } finally {
+    plain.destroy();
+  }
+  const v = openLP(LP, [cellsField]);
+  assert.ok(!press(v.contentDOM.querySelector(".cm-table-widget"), "pointerdown").defaultPrevented);
+});
+
+test("a click on a link in a table widget's cell is left to Obsidian", async () => {
+  class LinksWidget extends WidgetType {
+    toDOM() {
+      const el = document.createElement("div");
+      el.className = "cm-embed-block cm-table-widget";
+      el.innerHTML = "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody><tr><td>1</td><td><div class='table-cell-wrapper'><a class='internal-link' href='2'><span>2</span></a> <a class='tag' href='#t'>#t</a> <input type='checkbox'></div></td></tr></tbody></table>";
+      return el;
+    }
+  }
+  const field = StateField.define({
+    create: (state) => Decoration.set(Decoration.replace({ widget: new LinksWidget(), block: true })
+      .range(state.doc.line(3).from, state.doc.line(5).to)),
+    update: (deco, tr) => deco.map(tr.changes),
+    provide: (f) => EditorView.decorations.from(f),
+  });
+  const v = openLP(LP, [field]);
+  const head = v.state.selection.main.head;
+  for (const el of v.contentDOM.querySelectorAll("a span, a.tag, input")) {
+    const events = ["pointerdown", "mousedown", "click"].map((type) => press(el, type));
+    assert.ok(events.every((e) => !e.defaultPrevented), el.outerHTML);
+    assert.equal(v.state.selection.main.head, head);
+  }
+  assert.ok(press(v.contentDOM.querySelector(".table-cell-wrapper"), "pointerdown").defaultPrevented);
+  assert.equal(v.state.selection.main.head, v.state.doc.line(5).from + 6);
+});
+
+test("a click below a later row of dashes goes to the row the widget draws", async () => {
+  class DashesWidget extends WidgetType {
+    toDOM() {
+      const el = document.createElement("div");
+      el.className = "cm-embed-block cm-table-widget";
+      el.innerHTML = "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody><tr><td>-</td><td>-</td></tr><tr><td>1</td><td>2</td></tr></tbody></table>";
+      return el;
+    }
+  }
+  const field = StateField.define({
+    create: (state) => Decoration.set(Decoration.replace({ widget: new DashesWidget(), block: true })
+      .range(state.doc.line(3).from, state.doc.line(6).to)),
+    update: (deco, tr) => deco.map(tr.changes),
+    provide: (f) => EditorView.decorations.from(f),
+  });
+  const v = openLP("above\n\n| a | b |\n| - | - |\n| - | - |\n| 1 | 2 |\n\nbelow", [field]);
+  press(v.contentDOM.querySelectorAll("td")[3], "pointerdown");
+  assert.equal(v.state.selection.main.head, v.state.doc.line(6).from + 6);
+  press(v.contentDOM.querySelectorAll("td")[0], "pointerdown");
+  assert.equal(v.state.selection.main.head, v.state.doc.line(5).from + 2);
 });
 
 // --- ae / ie -------------------------------------------------------------------
@@ -2539,10 +3570,16 @@ test("unload restores every Vim engine the plugin patched", async () => {
   assert.equal(plugin.patchedVim, Vim);
   const installed = calls.length;
   assert.ok(CodeMirror.prototype.findPosV.stock);
+  assert.ok(Vim.getRegisterController().pushText.stock);
+  const lp = openLP(LP);
+  gotoLine(lp, 4);
+  assert.equal(highlights(lp).length, 1);
   plugin.onunload();
+  assert.deepEqual(highlights(lp), []);
   assert.ok(!CodeMirror.prototype.findPosV.stock);
+  assert.ok(!Vim.getRegisterController().pushText.stock);
   assert.deepEqual(calls.slice(installed).sort(), [
-    "action orgMoveSubtree", "action orgOpenLine", "motion expandToLine", "motion orgElement", "motion orgPasteAfter", "motion orgPasteBefore",
+    "action orgMoveSubtree", "action orgOpenLine", "action orgPaste", "action orgTableEdit", "motion expandToLine", "motion orgCell", "motion orgElement", "motion orgPasteAfter", "motion orgPasteBefore",
     "motion orgSubtree", "motion orgUpHeading", "operator orgDelete", "operator orgIndent",
   ]);
   // Vim, patched twice, is back to stock: dd on a folded heading deletes one line.
@@ -2588,6 +3625,25 @@ test("after unload, M-j, dar and dae do nothing", async () => {
   gotoLine(v, 3);
   await keys(v, "<A-j>dardaedie");
   assert.equal(text(v), DOC);
+});
+
+test("after unload, the table keys do nothing", async () => {
+  const v = open(TBL);
+  gotoCell(v, 4, "2");
+  await keys(v, "<A-j><OrgTableMoveColumnLeft><OrgTableInsertRow>");
+  const event = metaKey(v, "S-l");
+  await tick();
+  assert.ok(!event.defaultPrevented);
+  assert.equal(text(v), TBL);
+});
+
+test("after unload, di| does nothing and a block in a table yanks its text", async () => {
+  const v = open(CELLS);
+  gotoCell(v, 3, "x");
+  await keys(v, "di|");
+  assert.equal(text(v), CELLS);
+  await block(v, [3, "x"], [3, "y"], "y");
+  assert.ok(!unnamed().toString().includes("\t"));
 });
 
 test("after unload, gh does not move", async () => {

@@ -2190,6 +2190,23 @@ function showTablesAsText(enabled) {
   ];
 }
 
+// The Vim Motions plugin hides its cursor while the cursor is in a table and
+// any table widget is drawn in the editor, as if the cursor were in a cell
+// editor of that widget. A table shown as text has none, so while the cursor
+// is in one, undo that: the destroy of Vim Motions' view plugin resets it
+// without removing it, and the plugin hides the cursor again only when the
+// cursor next enters a table. Without Vim Motions this does nothing.
+function showCursorInTextTable(view) {
+  const breaks = view.state.field(tableBreaksField, false);
+  if (!breaks || breaks.length === 0) return;
+  const b = tableBreak(view.state.doc, view.state.selection.main.head);
+  if (!b || !breaks.some((r) => r.from === b.from)) return;
+  for (const p of view.plugins || []) {
+    const v = p && p.value;
+    if (v && v.view === view && v.cursorInTable === true && typeof v.destroy === "function") v.destroy();
+  }
+}
+
 // The line breaks highlighted once tr is applied: those the transaction sets,
 // or the old ones mapped through its changes.
 function tableBreaksAfter(tr) {
@@ -2816,6 +2833,10 @@ module.exports = class EvilOrgPlugin extends Plugin {
         if (this.patchedVim) {
           this.patchFindPosV(update.view.cm);
           guarded(patchTableWidget)(update.view, (this.vimRestorers ||= []));
+        }
+        // After the view plugins' updates, as Vim Motions' hides the cursor.
+        if (update.selectionSet || update.focusChanged || update.docChanged) {
+          guarded(showCursorInTextTable)(update.view);
         }
         if (!update.selectionSet || !visualLineMode(update.view)) return;
         if (!foldExtendedSelection(update.view)) return;

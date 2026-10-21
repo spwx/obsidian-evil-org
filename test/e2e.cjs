@@ -21,7 +21,7 @@ dom.window.document.createRange = () => {
 };
 
 const { EditorState, EditorSelection, StateField, StateEffect } = require("@codemirror/state");
-const { EditorView, Decoration, WidgetType, runScopeHandlers } = require("@codemirror/view");
+const { EditorView, Decoration, WidgetType, runScopeHandlers, ViewPlugin } = require("@codemirror/view");
 const { foldable, foldService, foldedRanges, foldEffect, codeFolding } = require("@codemirror/language");
 const { markdown } = require("@codemirror/lang-markdown");
 const { history, undo } = require("@codemirror/commands");
@@ -2360,6 +2360,44 @@ test("the highlight is put back when Obsidian clears its search highlights, and 
   editorFor(v).addHighlights([{ from: 0, to: 5 }], "obsidian-search-match-highlight", false);
   gotoLine(v, 1);
   assert.deepEqual(highlights(v), [[0, 5, "obsidian-search-match-highlight"]]);
+});
+
+// A stand-in for Vim Motions' view plugin that hides the cursor in a table
+// while a table widget is drawn: as it does, it sets cursorInTable when the
+// cursor enters a table, and its destroy resets that.
+function vimMotionsTablePlugin() {
+  const log = { hidden: 0, shown: 0, instance: null };
+  const extension = ViewPlugin.fromClass(class {
+    constructor(view) { this.view = view; this.cursorInTable = false; log.instance = this; }
+    update(u) {
+      if (!(u.selectionSet || u.focusChanged)) return;
+      const inTable = /^\s*\|/.test(u.state.doc.lineAt(u.state.selection.main.head).text);
+      if (inTable && !this.cursorInTable) [this.cursorInTable, log.hidden] = [true, log.hidden + 1];
+      else if (!inTable && this.cursorInTable) this.cursorInTable = false;
+    }
+    destroy() { if (this.cursorInTable) [this.cursorInTable, log.shown] = [false, log.shown + 1]; }
+  });
+  return { extension, log };
+}
+
+test("Vim Motions' cursor isn't hidden in a table shown as text", async () => {
+  const { extension: vm, log } = vimMotionsTablePlugin();
+  const v = openLP(LP, vm);
+  gotoLine(v, 4);
+  assert.deepEqual([log.hidden, log.shown, log.instance.cursorInTable], [1, 1, false]);
+  gotoLine(v, 5);
+  assert.deepEqual([log.hidden, log.shown, log.instance.cursorInTable], [2, 2, false]);
+  await keys(v, "x");
+  assert.equal(log.instance.cursorInTable, false);
+  await keys(v, "G");
+  assert.deepEqual([log.hidden, log.shown, log.instance.cursorInTable], [3, 3, false]);
+});
+
+test("Vim Motions' cursor is left hidden in a table not shown as text", async () => {
+  const { extension: vm, log } = vimMotionsTablePlugin();
+  const v = openLP("| a |\n| - |", vm);
+  gotoLine(v, 2);
+  assert.deepEqual([log.hidden, log.shown, log.instance.cursorInTable], [1, 0, true]);
 });
 
 // Live Preview's table widget: a table of the rows but the delimiter row.

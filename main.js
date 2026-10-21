@@ -1121,34 +1121,47 @@ function replaceTable(view, table, rows, target) {
 // A new row without text; formatTable gives it every column.
 const emptyRow = () => ({ cells: [], delimiter: false });
 
+// The model of the table at cell for Tab and Enter, and the cell's row in it.
+// A Markdown table needs a delimiter row, right below its first row, so one
+// is added there if the table has none.
+function tableModelWithDelimiter(cell) {
+  const rows = tableModel(cell.table);
+  if (rows.some((r) => r.delimiter)) return { rows, row: cell.row };
+  rows.splice(1, 0, { cells: [], delimiter: true });
+  return { rows, row: cell.row > 0 ? cell.row + 1 : 0 };
+}
+
 // org-table-next-field (Tab) and org-table-previous-field (Shift-Tab): align
 // the table at the cursor and go to the next or previous cell, row by row,
 // past the delimiter row. Tab in the last cell adds an empty row and goes to its
-// first cell; Shift-Tab in the first cell stays there. False outside a table.
+// first cell; Shift-Tab in the first cell stays there. A table without a
+// delimiter row gets one (see tableModelWithDelimiter). False outside a table.
 function tableNextField(view, forward) {
   const cell = tableCellAt(view.state.doc, view.state.selection.main.head);
   if (!cell) return false;
-  const rows = tableModel(cell.table);
+  const { rows, row: start } = tableModelWithDelimiter(cell);
   const columns = tableColumns(rows);
-  let { row, col } = cell;
+  let row = start;
+  let { col } = cell;
   do {
     col += forward ? 1 : -1;
     if (col >= columns) [row, col] = [row + 1, 0];
     else if (col < 0) [row, col] = [row - 1, columns - 1];
   } while (row >= 0 && row < rows.length && rows[row].delimiter);
   if (row >= rows.length) rows.push(emptyRow());
-  else if (row < 0) ({ row, col } = cell);
+  else if (row < 0) [row, col] = [start, cell.col];
   return replaceTable(view, cell.table, rows, { row, col });
 }
 
 // org-table-next-row (Enter): align the table at the cursor and go to the
 // same column in the next row, past the delimiter row, adding an empty row at
-// the end of the table. False outside a table.
+// the end of the table. A table without a delimiter row gets one (see
+// tableModelWithDelimiter). False outside a table.
 function tableNextRow(view) {
   const cell = tableCellAt(view.state.doc, view.state.selection.main.head);
   if (!cell) return false;
-  const rows = tableModel(cell.table);
-  let row = cell.row + 1;
+  const { rows, row: start } = tableModelWithDelimiter(cell);
+  let row = start + 1;
   while (row < rows.length && rows[row].delimiter) row++;
   if (row >= rows.length) rows.push(emptyRow());
   return replaceTable(view, cell.table, rows, { row, col: cell.col });

@@ -62,6 +62,8 @@ In a Markdown table, these keys align the table and move the cursor between cell
 
 The cursor goes to the start of the text of the cell. The keys skip the delimiter row (`| --- | :-: |`).
 
+A Markdown table needs a delimiter row, right below its first row. If the table does not have one, these keys add it. For example, type `| Name | Phone |` and push `Enter`: the delimiter row goes below the row, and the cursor goes to a new row below it. To set the alignment of a column, put colons in the delimiter row, as in `| :-: |`.
+
 To align the table, the plugin pads each cell with spaces, so that the pipes line up:
 
 - Each row gets all of the columns. A row without a closing `|` gets one.

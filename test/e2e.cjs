@@ -1497,6 +1497,52 @@ test("Tab, S-Tab and Enter in a table work in insert mode too", async () => {
   assert.ok(insertMode(v));
 });
 
+test("Tab and Enter add the delimiter row below the first row of a table without one", async () => {
+  let v = open("# T\n| a | bb |\n\ntext");
+  gotoLine(v, 2);
+  await keys(v, "<Tab>");
+  assert.equal(text(v), "# T\n| a   | bb  |\n| --- | --- |\n\ntext");
+  assert.deepEqual(cursorAt(v), [2, 8]);
+  await keys(v, "<Tab>");
+  assert.equal(text(v), "# T\n| a   | bb  |\n| --- | --- |\n|     |     |\n\ntext");
+  assert.deepEqual(cursorAt(v), [4, 2]);
+  v = open("| a | bb |");
+  await keys(v, "A<Enter>");
+  assert.equal(text(v), "| a   | bb  |\n| --- | --- |\n|     |     |");
+  assert.deepEqual(cursorAt(v), [3, 8]);
+  assert.ok(insertMode(v));
+  await keys(v, "<Esc>u");
+  assert.equal(text(v), "| a | bb |");
+});
+
+test("the delimiter row Tab and Enter add goes below the first row, keeping its indent", async () => {
+  let v = open("  | a | b |\n| c | d |");
+  gotoLine(v, 2);
+  await keys(v, "<Enter>");
+  assert.equal(text(v), "  | a   | b   |\n  | --- | --- |\n  | c   | d   |\n  |     |     |");
+  assert.deepEqual(cursorAt(v), [4, 4]);
+  v = open("| a | b |\n| c | d |");
+  gotoLine(v, 2);
+  await keys(v, "<S-Tab>");
+  assert.equal(text(v), "| a   | b   |\n| --- | --- |\n| c   | d   |");
+  assert.deepEqual(cursorAt(v), [1, 8]);
+  v = open("| a | b |");
+  await keys(v, "<S-Tab>");
+  assert.equal(text(v), "| a   | b   |\n| --- | --- |");
+  assert.deepEqual(cursorAt(v), [1, 2]);
+});
+
+test("Tab and Enter keep a table's delimiter row and add no other", async () => {
+  let v = open("| a | bb |\n| :-: | -: |\n| c |");
+  gotoLine(v, 3);
+  await keys(v, "<Tab>");
+  assert.equal(text(v), "|  a  |  bb |\n| :-: | --: |\n|  c  |     |");
+  v = open("| a | b |\n| x | - |");
+  gotoLine(v, 2);
+  await keys(v, "$<Tab>");
+  assert.equal(text(v), "| a   | b   |\n| --- | --- |\n| x   | -   |\n|     |     |");
+});
+
 test("Tab off a table still cycles folds, and a | line in a code block isn't a table", async () => {
   let v = open("# A\n| x |\n# B\nb");
   await keys(v, "<Tab>");
@@ -1518,10 +1564,10 @@ test("aligning pads by the delimiter's colons, keeps escaped pipes and indent, a
   ].join("\n"));
 });
 
-test("aligning counts wide characters twice and needs no delimiter row", async () => {
-  const v = open("| 漢字 | x |\n| a | bb |");
+test("aligning counts wide characters twice", async () => {
+  const v = open("| 漢字 | x |\n|-|-|\n| a | bbbb |");
   await keys(v, "<Tab>");
-  assert.equal(text(v), "| 漢字 | x  |\n| a    | bb |");
+  assert.equal(text(v), "| 漢字 | x    |\n| ---- | ---- |\n| a    | bbbb |");
 });
 
 test("ar on a line under a heading that only contains a pipe is still the subtree", async () => {

@@ -1996,6 +1996,22 @@ function openLine(cm, args, vim) {
   this.enterInsertMode(cm, { repeat: args.repeat, head }, vim);
 }
 
+// org-toggle-checkbox (C-c C-c on an item): check the checkbox of the list
+// item the cursor is in, or uncheck it if it has any mark. Returns false,
+// changing nothing, outside an item with a checkbox, and in a code block.
+function toggleTask(view) {
+  const state = view.state;
+  const doc = state.doc;
+  const n = doc.lineAt(state.selection.main.head).number;
+  const item = !scanLines(doc).code[n] && enclosingItem(doc, n);
+  if (!item || !item.checkbox) return false;
+  const line = doc.line(item.line);
+  const m = line.text.match(ITEM_RE);
+  const from = line.from + m[0].length - 2;
+  view.dispatch({ changes: { from, to: from + 1, insert: m[5] === "[ ]" ? "x" : " " }, userEvent: "input" });
+  return true;
+}
+
 // org-insert-heading-respect-content (M-RET) and, with deeper, a subheading:
 // open a heading after the subtree the cursor is in, at the same level or one
 // deeper. Outside any heading, open a level-1 heading after the text before
@@ -2435,7 +2451,7 @@ const uniformHeadings = EditorView.theme({
 });
 
 const DEFAULT_SETTINGS = {
-  indent: false, compactHeadings: false, uniformHeadings: false, hideFoldArrows: false, metaModifier: "alt",
+  indent: false, compactHeadings: false, uniformHeadings: false, hideFoldArrows: false, metaModifier: "alt", enterFollowsLinks: true,
 };
 
 class EvilOrgSettingTab extends PluginSettingTab {
@@ -2470,6 +2486,12 @@ class EvilOrgSettingTab extends PluginSettingTab {
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.hideFoldArrows)
         .onChange((on) => this.plugin.setSetting("hideFoldArrows", on)));
+    new Setting(this.containerEl)
+      .setName("Enter follows links and toggles checkboxes")
+      .setDesc("In Vim normal mode, Enter on a link follows it, and Enter in a list item with a checkbox checks or clears it. Elsewhere Enter is Vim's. In a table, Enter moves to the next row either way.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.enterFollowsLinks)
+        .onChange((on) => this.plugin.setSetting("enterFollowsLinks", on)));
     new Setting(this.containerEl)
       .setName("Meta key")
       .setDesc("The modifier that stands for org-mode's Meta: with j and k it moves a subtree, and in a table, with h, j, k, l or an arrow, it changes the table. The other modifier is then left to Vim and Obsidian.")
@@ -2707,18 +2729,32 @@ module.exports = class EvilOrgPlugin extends Plugin {
     Vim.handleKey(view.cm, vimKey, "user");
   }
 
-  // Enter in a table (org-table-next-row) in vim normal mode. Vim reads Enter
+  // Enter in vim normal mode: in a table, org-table-next-row; on a link, follow
+  // it (org-return-follows-link), as Obsidian's Follow link under cursor does;
+  // in a list item with a checkbox, toggle it (see toggleTask), unless the
+  // enterFollowsLinks setting is off. Elsewhere it is vim's. Vim reads Enter
   // as `j^` before the editor's keymaps see it, so it is caught first, as
   // Alt-j is. Only in the note's own editor: in Live Preview a table's cells
   // are editors of their own, with their own Enter. With a count pending,
   // Enter is vim's. In insert mode vim leaves Enter to the keymap.
-  handleTableEnter(e) {
+  handleEnter(e) {
     if (e.key !== "Enter" || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) return;
     const view = activeEditorView(this.app);
     if (!view || e.target !== view.contentDOM || !normalMode(view)) return;
-    if (!guarded(tableNextRow)(view)) return;
+    if (!guarded(tableNextRow)(view) &&
+      !(this.settings.enterFollowsLinks && (guarded(() => this.followLink())() || guarded(toggleTask)(view)))) return;
     e.preventDefault();
     e.stopPropagation();
+  }
+
+  // Follow the link, or tag, at the cursor of the active note. Returns false
+  // where there is none.
+  followLink() {
+    const md = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const editor = md && md.editor;
+    if (!editor || typeof editor.getClickableTokenAt !== "function") return false;
+    if (!editor.getClickableTokenAt(editor.getCursor())) return false;
+    return this.app.commands.executeCommandById("editor:follow-link");
   }
 
   // Change a setting in every editor, and keep the choice.
@@ -2809,7 +2845,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
     const listen = (doc) => {
       this.registerDomEvent(doc, "keydown", (e) => {
         this.handleAltMove(e);
-        this.handleTableEnter(e);
+        this.handleEnter(e);
       }, { capture: true });
       for (const type of ["pointerdown", "mousedown", "click"]) {
         this.registerDomEvent(doc, type, guarded((e) => this.handleTableClick(e)), { capture: true });

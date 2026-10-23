@@ -65,6 +65,15 @@ function editorFor(view) {
   return {
     cm: view,
     offsetToPos: (offset) => offset,
+    getCursor: () => view.state.selection.main.head,
+    // Obsidian's token for a link at a position: here a [[wikilink]] only.
+    getClickableTokenAt(pos) {
+      const line = view.state.doc.lineAt(pos);
+      for (const m of line.text.matchAll(/\[\[([^\]]*)\]\]/g)) {
+        if (pos >= line.from + m.index && pos < line.from + m.index + m[0].length) return { type: "internal-link", text: m[1] };
+      }
+      return null;
+    },
     addHighlights(ranges, cls, removePrevious) {
       if (!highlightMarks.has(cls)) highlightMarks.set(cls, Decoration.mark({ class: cls }));
       const mark = highlightMarks.get(cls);
@@ -74,7 +83,10 @@ function editorFor(view) {
     },
   };
 }
+// The commands the plugin runs, by id, in order.
+const executed = [];
 const app = {
+  commands: { executeCommandById: (id) => (executed.push(id), true) },
   workspace: {
     getActiveViewOfType: () => (activeView ? { editor: editorFor(activeView) } : null),
     getLeavesOfType: () => (activeView ? [{ view: { editor: editorFor(activeView) } }] : []),
@@ -1479,6 +1491,58 @@ test("Enter outside a table, with a count, or in visual mode is vim's", async ()
   v = open("| x |\n| y |");
   await keys(v, "v<Tab><Enter><Esc>");
   assert.equal(text(v), "| x |\n| y |");
+});
+
+test("Enter on a link follows it, as Follow link under cursor does", async () => {
+  const v = open("- [ ] see [[Note]] here");
+  executed.length = 0;
+  v.dispatch({ selection: { anchor: 12 } });
+  await keys(v, "<Enter>");
+  assert.deepEqual(executed, ["editor:follow-link"]);
+  assert.equal(text(v), "- [ ] see [[Note]] here");
+});
+
+test("Enter in a list item with a checkbox checks it, or unchecks it", async () => {
+  const v = open("- [ ] a\n  more\n  - [x] b\n- [/] c\n- d\n```\n- [ ] e\n```");
+  executed.length = 0;
+  await keys(v, "$<Enter>");
+  assert.equal(text(v), "- [x] a\n  more\n  - [x] b\n- [/] c\n- d\n```\n- [ ] e\n```");
+  assert.deepEqual(cursorAt(v), [1, 6]);
+  gotoLine(v, 2);
+  await keys(v, "<Enter>");
+  assert.equal(text(v), "- [ ] a\n  more\n  - [x] b\n- [/] c\n- d\n```\n- [ ] e\n```");
+  gotoLine(v, 3);
+  await keys(v, "<Enter>");
+  gotoLine(v, 4);
+  await keys(v, "<Enter>");
+  assert.equal(text(v), "- [ ] a\n  more\n  - [ ] b\n- [ ] c\n- d\n```\n- [ ] e\n```");
+  await keys(v, "u");
+  assert.equal(text(v), "- [ ] a\n  more\n  - [ ] b\n- [/] c\n- d\n```\n- [ ] e\n```");
+  for (const n of [5, 7]) {
+    gotoLine(v, n);
+    await keys(v, "<Enter>");
+  }
+  assert.equal(text(v), "- [ ] a\n  more\n  - [ ] b\n- [/] c\n- d\n```\n- [ ] e\n```");
+  assert.deepEqual(executed, []);
+});
+
+test("with the Enter setting off, Enter on a link or a checkbox is vim's, and in a table still moves", async () => {
+  await plugin.setSetting("enterFollowsLinks", false);
+  try {
+    let v = open("- [ ] see [[Note]] here\n- [ ] b");
+    executed.length = 0;
+    v.dispatch({ selection: { anchor: 12 } });
+    await keys(v, "<Enter>");
+    gotoLine(v, 2);
+    await keys(v, "<Enter>");
+    assert.deepEqual(executed, []);
+    assert.equal(text(v), "- [ ] see [[Note]] here\n- [ ] b");
+    v = open("| a | b |\n| - | - |\n| c | d |");
+    await keys(v, "<Enter>");
+    assert.equal(text(v), "| a   | b   |\n| --- | --- |\n| c   | d   |");
+  } finally {
+    await plugin.setSetting("enterFollowsLinks", true);
+  }
 });
 
 test("Tab, S-Tab and Enter in a table work in insert mode too", async () => {
@@ -2982,7 +3046,7 @@ function indentSteps(view) {
 
 test("every setting is off by default", async () => {
   assert.deepEqual(plugin.settings, {
-    indent: false, compactHeadings: false, uniformHeadings: false, hideFoldArrows: false, metaModifier: "alt",
+    indent: false, compactHeadings: false, uniformHeadings: false, hideFoldArrows: false, metaModifier: "alt", enterFollowsLinks: true,
   });
   assert.equal(plugin.settingExtensions.length, 0);
   const v = open(DOC);

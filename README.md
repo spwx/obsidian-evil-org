@@ -208,6 +208,17 @@ In a list, these keys move the item at the cursor, with its body and sub-items, 
 
 On other lines, these keys move the line. A folded heading counts as one line.
 
+### `Enter`: Follow a link or toggle a checkbox
+
+In a table, `Enter` moves to the next row. See [Tab, Shift-Tab, and Enter in a table](#tab-shift-tab-and-enter-in-a-table).
+
+- On a link or a tag, `Enter` follows it (`org-return-follows-link`), as **Follow link under cursor** does.
+- In a list item that has a checkbox, `Enter` checks the checkbox (`org-toggle-checkbox`). If the checkbox is already marked, as in `[x]` or `[/]`, `Enter` clears it. The cursor can be on any line of the item.
+
+At all other locations, and with a count, `Enter` operates as in Vim. One `u` undoes one toggle.
+
+To keep Vim's `Enter` on links and checkboxes, set **Settings → Evil Org → Enter follows links and toggles checkboxes** to off. In a table, `Enter` still moves to the next row.
+
 ### `o` / `O`: Open a list item or table row
 
 In a list, these keys open a new item below or above the item at the cursor (`evil-org-open-below` / `evil-org-open-above`):
@@ -407,7 +418,7 @@ Obsidian does not have a public API for its Vim mode. Thus, the plugin uses inte
 
 In Vim normal mode, the plugin gets `Alt-j` and `Alt-k` (or `Ctrl-j` and `Ctrl-k`, see [Meta key](#meta-key)) before Obsidian does. Thus, an Obsidian hotkey on `Alt-j` or `Alt-k` does not operate in Vim normal mode.
 
-In a table, in Vim normal mode, the plugin gets `Enter`, and `Alt` with `h`, `l`, an arrow, or `Shift`, before Obsidian and Vim do.
+In Vim normal mode, the plugin gets `Enter` in a table, on a link, and in a list item with a checkbox, and in a table it gets `Alt` with `h`, `l`, an arrow, or `Shift`, before Obsidian and Vim do.
 
 In Live Preview, with Vim, the plugin gets a click on a cell of a table before Obsidian's table editor does (see [Tables in Live Preview](#tables-in-live-preview)).
 

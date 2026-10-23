@@ -1979,6 +1979,35 @@ test("o and O in the header or on the delimiter row insert below the delimiter r
   }
 });
 
+test("o with a count in a table inserts that many rows, and . repeats it", async () => {
+  const v = open(TBL);
+  gotoCell(v, 4, "2");
+  await keys(v, "3o");
+  type(v, "x");
+  await keys(v, "<Esc>");
+  const opened = [
+    "| a   |   b | c   |",
+    "| :-- | --: | --- |",
+    "| 1   |   2 | 3   |",
+    "|     |   x |     |",
+    "|     |   x |     |",
+    "|     | x    |     |",
+    "| 4   |   5 | 6   |",
+  ];
+  assert.deepEqual(tableLines(v), opened);
+  assert.ok(text(v).endsWith("\n\ntext"));
+  await keys(v, ".");
+  const repeated = tableLines(v);
+  assert.equal(repeated.length, opened.length + 1);
+  assert.deepEqual(repeated.slice(0, 5), opened.slice(0, 5));
+  assert.equal(repeated[6].split("|")[2].trim(), "x");
+  assert.deepEqual(repeated.at(-1), "| 4   |   5 | 6   |");
+  assert.ok(text(v).endsWith("\n\ntext"));
+  await keys(v, "u");
+  assert.deepEqual(tableLines(v), opened);
+  assert.ok(text(v).endsWith("\n\ntext"));
+});
+
 test("p and P in the header or on the delimiter row paste below the delimiter row", async () => {
   for (const [line, key] of [[2, "p"], [2, "P"], [3, "p"], [3, "P"]]) {
     const v = open(TBL);

@@ -1590,7 +1590,7 @@ const ARROW_KEYS = { h: "ArrowLeft", j: "ArrowDown", k: "ArrowUp", l: "ArrowRigh
 const OPTION_SHIFT_KEYS = { h: "Ó", j: "Ô", k: "", l: "Ò" };
 const ARROW_NAMES = { Left: "h", Down: "j", Up: "k", Right: "l" };
 
-function metaKey(view, name, { option = false } = {}) {
+function metaKey(view, name, { option = false, ctrl = false } = {}) {
   const shiftKey = name.startsWith("S-");
   const base = name.replace(/^S-/, "");
   const letter = ARROW_NAMES[base] || base;
@@ -1599,7 +1599,7 @@ function metaKey(view, name, { option = false } = {}) {
     : shiftKey ? letter.toUpperCase() : letter;
   const code = ARROW_NAMES[base] ? ARROW_KEYS[letter] : `Key${letter.toUpperCase()}`;
   const event = new window.KeyboardEvent("keydown", {
-    key, code, altKey: true, shiftKey, bubbles: true, cancelable: true,
+    key, code, altKey: !ctrl, ctrlKey: ctrl, shiftKey, bubbles: true, cancelable: true,
   });
   let reached = false;
   const spy = () => { reached = true; };
@@ -1646,6 +1646,42 @@ test("M-h and M-l move the column, its alignment and the cursor with it", async 
     "|   5 | 4   | 6   |",
   ]);
   assert.deepEqual(cursorAt(v), [4, 4]);
+});
+
+test("with the Meta key on Ctrl, Ctrl takes Alt's keys and Alt is left alone", async () => {
+  await plugin.setSetting("metaModifier", "ctrl");
+  try {
+    const v = open(TBL);
+    gotoCell(v, 4, "2");
+    let event = metaKey(v, "l");
+    await tick();
+    assert.ok(event.reachedEditor);
+    assert.equal(text(v), TBL);
+    await metaKeys(v, "l 2 S-j", { ctrl: true });
+    assert.deepEqual(tableLines(v), [
+      "| a   | c   |   b |",
+      "| :-- | --- | --: |",
+      "|     |     |     |",
+      "|     |     |     |",
+      "| 1   | 3   |   2 |",
+      "| 4   | 6   |   5 |",
+    ]);
+    const h = open("## A\n## B\n## C");
+    event = metaKey(h, "j", { option: true });
+    await tick();
+    assert.ok(event.reachedEditor);
+    assert.equal(text(h), "## A\n## B\n## C");
+    event = metaKey(h, "j", { ctrl: true });
+    await tick();
+    assert.ok(event.defaultPrevented);
+    assert.equal(text(h), "## B\n## A\n## C");
+    await keys(h, ".");
+    assert.equal(text(h), "## B\n## C\n## A");
+    await metaKeys(h, "k", { ctrl: true });
+    assert.equal(text(h), "## B\n## A\n## C");
+  } finally {
+    await plugin.setSetting("metaModifier", "alt");
+  }
 });
 
 test("M-← and M-→ move the column; it stops at either edge", async () => {
@@ -2916,7 +2952,9 @@ function indentSteps(view) {
 }
 
 test("every setting is off by default", async () => {
-  assert.deepEqual(plugin.settings, { indent: false, compactHeadings: false, uniformHeadings: false, hideFoldArrows: false });
+  assert.deepEqual(plugin.settings, {
+    indent: false, compactHeadings: false, uniformHeadings: false, hideFoldArrows: false, metaModifier: "alt",
+  });
   assert.equal(plugin.settingExtensions.length, 0);
   const v = open(DOC);
   assert.deepEqual(indentSteps(v), [0, 0, 0, 0, 0, 0, 0, 0]);

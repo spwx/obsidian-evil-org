@@ -79,7 +79,7 @@ A table is a block of lines that start with `|`. Lines in fenced code blocks are
 
 ### `Alt` with `h`, `j`, `k`, `l`, or an arrow: Change a table
 
-In a Markdown table, in Vim normal mode, these keys move, delete, and insert rows and columns, as in the org-mode table editor and evil-org. On macOS, the Alt key is the Option key. Each arrow key does the same as the letter in its direction:
+In a Markdown table, in Vim normal mode, these keys move, delete, and insert rows and columns, as in the org-mode table editor and evil-org. On macOS, the Alt key is the Option key. To use `Ctrl` in place of `Alt`, see [Meta key](#meta-key). Each arrow key does the same as the letter in its direction:
 
 | Key | Arrow key | Change | org-mode command |
 | --- | --- | --- | --- |
@@ -190,7 +190,7 @@ On a range (`3>>`, `V>`):
 
 ### `Alt-j` / `Alt-k`: Move a subtree, list item, or line
 
-On macOS, the Alt key is the Option key. In a table, these keys move the table row. See [Change a table](#alt-with-h-j-k-l-or-an-arrow-change-a-table).
+On macOS, the Alt key is the Option key. To use `Ctrl-j` and `Ctrl-k` instead, see [Meta key](#meta-key). In a table, these keys move the table row. See [Change a table](#alt-with-h-j-k-l-or-an-arrow-change-a-table).
 
 On a heading, these keys move the subtree down or up, past the next or previous sibling (`M-↓` / `M-↑`):
 
@@ -373,6 +373,17 @@ Set **Settings → Evil Org → Hide heading fold arrows** to on. The editor the
 - A folded heading still shows the number of lines in its fold.
 - List items keep their fold arrows.
 
+## Meta key
+
+The keys that org-mode binds to Meta (`M-`) use `Alt` by default. To use `Ctrl` instead, set **Settings → Evil Org → Meta key** to **Ctrl**. This changes:
+
+- `Alt-j` / `Alt-k`, which move a subtree, list item, or line, to `Ctrl-j` / `Ctrl-k`.
+- `Alt` with `h`, `j`, `k`, `l`, or an arrow, which change a table, to `Ctrl` with the same keys.
+
+The `Alt` keys then do what they did without the plugin. In Vim normal mode, the plugin gets the `Ctrl` keys before Vim and Obsidian do. Thus, Vim's `Ctrl-j` and an Obsidian hotkey on `Ctrl-k` do not operate in Vim normal mode, and in a table the same goes for `Ctrl-h`, `Ctrl-l`, and `Ctrl` with an arrow.
+
+The Obsidian commands keep their names, such as **Move subtree down (M-↓ in org-mode)**.
+
 ## Installation
 
 To install the plugin from Obsidian, do these steps:
@@ -394,7 +405,7 @@ To install the plugin manually, do these steps:
 
 Obsidian does not have a public API for its Vim mode. Thus, the plugin uses interfaces that Obsidian does not document. An Obsidian update can stop the plugin. When you disable the plugin, Vim goes back to its standard behavior.
 
-In Vim normal mode, the plugin gets `Alt-j` and `Alt-k` before Obsidian does. Thus, an Obsidian hotkey on `Alt-j` or `Alt-k` does not operate in Vim normal mode.
+In Vim normal mode, the plugin gets `Alt-j` and `Alt-k` (or `Ctrl-j` and `Ctrl-k`, see [Meta key](#meta-key)) before Obsidian does. Thus, an Obsidian hotkey on `Alt-j` or `Alt-k` does not operate in Vim normal mode.
 
 In a table, in Vim normal mode, the plugin gets `Enter`, and `Alt` with `h`, `l`, an arrow, or `Shift`, before Obsidian and Vim do.
 

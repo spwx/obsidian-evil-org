@@ -2434,7 +2434,9 @@ const uniformHeadings = EditorView.theme({
   "& .cm-line.HyperMD-header": { fontSize: "inherit !important", lineHeight: "var(--line-height-normal) !important" },
 });
 
-const DEFAULT_SETTINGS = { indent: false, compactHeadings: false, uniformHeadings: false, hideFoldArrows: false };
+const DEFAULT_SETTINGS = {
+  indent: false, compactHeadings: false, uniformHeadings: false, hideFoldArrows: false, metaModifier: "alt",
+};
 
 class EvilOrgSettingTab extends PluginSettingTab {
   constructor(app, plugin) {
@@ -2468,6 +2470,14 @@ class EvilOrgSettingTab extends PluginSettingTab {
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.hideFoldArrows)
         .onChange((on) => this.plugin.setSetting("hideFoldArrows", on)));
+    new Setting(this.containerEl)
+      .setName("Meta key")
+      .setDesc("The modifier that stands for org-mode's Meta: with j and k it moves a subtree, and in a table, with h, j, k, l or an arrow, it changes the table. The other modifier is then left to Vim and Obsidian.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("alt", "Alt (Option on macOS)")
+        .addOption("ctrl", "Ctrl")
+        .setValue(this.plugin.settings.metaModifier)
+        .onChange((value) => this.plugin.setSetting("metaModifier", value)));
   }
 }
 
@@ -2480,12 +2490,14 @@ const ALT_ARROWS = { ArrowLeft: "h", ArrowDown: "j", ArrowUp: "k", ArrowRight: "
 // The table edits of M-h, M-l and the Shift forms (M-S-h is "H"), by letter.
 // Vim gets them as keys of their own, which no keydown gives, so that off a
 // table these Alt keys still reach vim, the editor and the hotkeys as before.
-// In a table M-j/M-k are <A-j>/<A-k>, which move the row there.
+// In a table M-j/M-k are the subtree moves (see moveVimKey), which move the row there.
 const TABLE_KEYS = {
   h: "moveColumnLeft", l: "moveColumnRight",
   H: "deleteColumn", L: "insertColumn", K: "deleteRow", J: "insertRow",
 };
 const tableVimKey = (edit) => `<OrgTable${edit[0].toUpperCase()}${edit.slice(1)}>`;
+// The keys handleAltMove gives vim for M-j and M-k.
+const moveVimKey = (forward) => (forward ? "<OrgMoveSubtreeDown>" : "<OrgMoveSubtreeUp>");
 
 // Command ids and names are user-facing: hotkeys are bound to the ids.
 const COMMANDS = [
@@ -2537,7 +2549,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
       Vim.defineOperator("orgIndent", stockIndent);
       Vim.defineOperator("orgDelete", stockDelete(Vim));
     }));
-    // Alt-j/Alt-k go to vim only once its <A-j>/<A-k> mappings are in place.
+    // Alt-j/Alt-k go to vim only once its mappings for them are in place.
     this.altMoveVim = guarded(() => this.overrideVim(Vim))() === false ? null : Vim;
   }
 
@@ -2571,10 +2583,12 @@ module.exports = class EvilOrgPlugin extends Plugin {
       });
     }
     // M-j / M-k move the subtree (M-↓ / M-↑ in org-mode), or in a table the
-    // row. On macOS vim reads Option-j as <A-j> too.
+    // row. handleAltMove gives vim keys of their own for them; <A-j>/<A-k>
+    // are mapped too, for the Alt keys that reach vim by themselves, and do
+    // nothing while the Meta key is Ctrl.
     Vim.defineAction("orgMoveSubtree", guarded((cm, args) => {
       const view = cm.cm6;
-      if (!view) return;
+      if (!view || (args.alt && this.settings.metaModifier === "ctrl")) return;
       const count = args.repeat || 1;
       if (tableCellAt(view.state.doc, view.state.selection.main.head)) {
         tableEdit(view, args.forward ? "moveRowDown" : "moveRowUp", count);
@@ -2582,8 +2596,10 @@ module.exports = class EvilOrgPlugin extends Plugin {
         moveSubtree(view, args.forward, count);
       }
     }));
-    Vim.mapCommand("<A-j>", "action", "orgMoveSubtree", { forward: true }, { context: "normal", isEdit: true });
-    Vim.mapCommand("<A-k>", "action", "orgMoveSubtree", { forward: false }, { context: "normal", isEdit: true });
+    for (const [letter, forward] of [["j", true], ["k", false]]) {
+      Vim.mapCommand(`<A-${letter}>`, "action", "orgMoveSubtree", { forward, alt: true }, { context: "normal", isEdit: true });
+      Vim.mapCommand(moveVimKey(forward), "action", "orgMoveSubtree", { forward }, { context: "normal", isEdit: true });
+    }
     // The other table edits, on keys only handleAltMove gives vim.
     Vim.defineAction("orgTableEdit", guarded((cm, args) => {
       if (cm.cm6) tableEdit(cm.cm6, args.edit, args.repeat || 1);
@@ -2651,7 +2667,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
   // On macOS Option-j arrives as `∆` with code "KeyJ", and some vim builds
   // strip the Alt modifier rather than restoring it from the code, leaving a
   // bare `j`. Catch Alt-j/Alt-k before any editor handler sees them and give
-  // vim <A-j>/<A-k> directly, which keeps counts and `.` working. A typed
+  // vim the subtree moves directly, which keeps counts and `.` working. A typed
   // letter wins over the code, so on Colemak or Dvorak the key in QWERTY's
   // J position (Alt-n, Alt-h) is left alone.
   //
@@ -2660,8 +2676,12 @@ module.exports = class EvilOrgPlugin extends Plugin {
   // the note's own editor: a cell editor of a Live Preview table keeps all
   // its keys, Alt-j/Alt-k too. Off a table Alt-arrows (word motion on macOS)
   // and the rest are left alone.
+  //
+  // With the Meta key setting on Ctrl, Ctrl takes the place of Alt here, and
+  // Alt is left alone.
   handleAltMove(e) {
-    if (!e.altKey || e.ctrlKey || e.metaKey) return;
+    const ctrl = this.settings && this.settings.metaModifier === "ctrl";
+    if (!(ctrl ? e.ctrlKey : e.altKey) || (ctrl ? e.altKey : e.ctrlKey) || e.metaKey) return;
     const key = (e.key || "").toLowerCase();
     const arrow = ALT_ARROWS[e.key];
     const letter = arrow || (/^[a-z]$/.test(key) ? (/^[hjkl]$/.test(key) ? key : null) : ALT_CODES[e.code]);
@@ -2676,9 +2696,9 @@ module.exports = class EvilOrgPlugin extends Plugin {
     let vimKey;
     if (table) {
       const edit = TABLE_KEYS[e.shiftKey ? letter.toUpperCase() : letter];
-      vimKey = edit ? tableVimKey(edit) : `<A-${letter}>`;
+      vimKey = edit ? tableVimKey(edit) : moveVimKey(letter === "j");
     } else if (!arrow && !e.shiftKey && /^[jk]$/.test(letter)) {
-      vimKey = `<A-${letter}>`;
+      vimKey = moveVimKey(letter === "j");
     } else {
       return;
     }

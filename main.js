@@ -2266,6 +2266,50 @@ function patchTableWidget(view, restorers) {
   });
 }
 
+// Live Preview hides markup such as `**` unless the selection or a search
+// highlight touches it. The highlight of a table shown as text touches only
+// its line break, so markup in its rows stayed hidden and the columns lost
+// their alignment. Markup in a table shown as text is not hidden: the view
+// plugin that hides it leaves out its decorations there, all but the point
+// widgets, as when the selection touches the markup. Obsidian doesn't export
+// the plugin; it is the one whose decorations read the search highlights.
+let markupPluginPatched = false;
+
+function patchMarkupPlugin(view, restorers) {
+  if (markupPluginPatched) return;
+  let proto = null;
+  for (const p of view.plugins || []) {
+    let o = p && p.value && Object.getPrototypeOf(p.value);
+    while (o && !Object.hasOwn(o, "buildDeco")) o = Object.getPrototypeOf(o);
+    if (o && typeof o.buildDeco === "function" && o.buildDeco.toString().includes("obsidian-search-match-highlight")) {
+      proto = o;
+      break;
+    }
+  }
+  if (!proto) return;
+  const stock = proto.buildDeco;
+  proto.buildDeco = function (v) {
+    const deco = stock.call(this, v);
+    const breaks = (v && v.state.field(tableBreaksField, false)) || [];
+    if (breaks.length === 0 || !deco || typeof deco.update !== "function") return deco;
+    const doc = v.state.doc;
+    const tables = [];
+    for (const b of breaks) {
+      const t = tableAt(doc, doc.lineAt(b.from).number) || tableAt(doc, doc.lineAt(b.to).number);
+      if (t) tables.push({ from: doc.line(t.first).from, to: doc.line(t.last).to });
+    }
+    if (tables.length === 0) return deco;
+    return deco.update({
+      filter: (from, to) => from === to || !tables.some((t) => from >= t.from && to <= t.to),
+    });
+  };
+  markupPluginPatched = true;
+  restorers.push(() => {
+    proto.buildDeco = stock;
+    markupPluginPatched = false;
+  });
+}
+
 // The offset of the text of a table's cell, given its row and column as the
 // widget draws them: the widget leaves out the delimiter row. An empty cell
 // gives the offset after its padding space.
@@ -2894,6 +2938,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
         if (this.patchedVim) {
           this.patchFindPosV(update.view.cm);
           guarded(patchTableWidget)(update.view, (this.vimRestorers ||= []));
+          guarded(patchMarkupPlugin)(update.view, this.vimRestorers);
         }
         // After the view plugins' updates, as Vim Motions' hides the cursor.
         if (update.selectionSet || update.focusChanged || update.docChanged) {

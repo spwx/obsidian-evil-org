@@ -2529,6 +2529,58 @@ test("Vim Motions' cursor is left hidden in a table not shown as text", async ()
   assert.deepEqual([log.hidden, log.shown, log.instance.cursorInTable], [1, 0, true]);
 });
 
+// A stand-in for Live Preview's view plugin that hides markup: buildDeco
+// replaces every `**` and puts a widget after the last row's first `|`. Its
+// source names the search highlight class, as Obsidian's does. One class for
+// every test, as Obsidian has: the plugin patches it once.
+class StarWidget extends WidgetType {
+  toDOM() { return document.createElement("span"); }
+}
+class MarkupPlugin {
+  constructor(view) { this.decorations = this.buildDeco(view); }
+  update(u) { this.decorations = this.buildDeco(u.view); }
+  buildDeco(view) {
+    // Markup that an "obsidian-search-match-highlight" touches is shown.
+    const doc = view.state.doc;
+    const ranges = [];
+    for (const m of doc.toString().matchAll(/\*\*/g)) ranges.push(Decoration.replace({}).range(m.index, m.index + 2));
+    const last = doc.line(5);
+    if (last.text.startsWith("|")) ranges.push(Decoration.widget({ widget: new StarWidget() }).range(last.from + 1));
+    return Decoration.set(ranges, true);
+  }
+}
+const stockBuildDeco = MarkupPlugin.prototype.buildDeco;
+const markupPlugin = ViewPlugin.fromClass(MarkupPlugin, { decorations: (p) => p.decorations });
+const MARKUP = "**x**\n\n| **a** | b |\n| - | - |\n| 1 | **2** |\n\nbelow";
+
+// The decorations the markup plugin draws: [from, to].
+function markupDecos(view) {
+  const out = [];
+  for (const it = view.plugin(markupPlugin).decorations.iter(); it.value; it.next()) out.push([it.from, it.to]);
+  return out;
+}
+
+test("markup in a table shown as text isn't hidden, but its widgets and markup outside it are", async () => {
+  const v = openLP(MARKUP, markupPlugin);
+  // The plugin finds the markup plugin on the editor's first update.
+  gotoLine(v, 1);
+  gotoLine(v, 4);
+  const line5 = v.state.doc.line(5).from;
+  assert.deepEqual(markupDecos(v), [[0, 2], [3, 5], [line5 + 1, line5 + 1]]);
+  await keys(v, "G");
+  assert.equal(markupDecos(v).length, 7);
+});
+
+test("markup in a table not shown as text stays hidden", async () => {
+  const v = openLP(MARKUP, markupPlugin);
+  gotoLine(v, 1);
+  gotoLine(v, 7);
+  const line3 = v.state.doc.line(3).from;
+  const line5 = v.state.doc.line(5).from;
+  assert.deepEqual(markupDecos(v), [[0, 2], [3, 5], [line3 + 2, line3 + 4], [line3 + 5, line3 + 7],
+    [line5 + 1, line5 + 1], [line5 + 6, line5 + 8], [line5 + 9, line5 + 11]]);
+});
+
 // Live Preview's table widget: a table of the rows but the delimiter row.
 class CellsWidget extends WidgetType {
   toDOM() {
@@ -3826,8 +3878,12 @@ test("unload restores every Vim engine the plugin patched", async () => {
   const lp = openLP(LP);
   gotoLine(lp, 4);
   assert.equal(highlights(lp).length, 1);
+  const patchedBuildDeco = MarkupPlugin.prototype.buildDeco;
   plugin.onunload();
   assert.deepEqual(highlights(lp), []);
+  // The markup plugin, patched by the tests above, has its own buildDeco back.
+  assert.notEqual(patchedBuildDeco, stockBuildDeco);
+  assert.equal(MarkupPlugin.prototype.buildDeco, stockBuildDeco);
   assert.ok(!CodeMirror.prototype.findPosV.stock);
   assert.ok(!Vim.getRegisterController().pushText.stock);
   assert.deepEqual(calls.slice(installed).sort(), [

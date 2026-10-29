@@ -2184,9 +2184,14 @@ function isTableBreak(doc, from, to) {
 // highlight off a table the selection leaves. Done in the transaction that
 // moves the selection, so Obsidian never draws the widget with the cursor in
 // it (it would focus a cell). In Source mode the highlights do nothing.
+// Obsidian sets a table's text lines in the code font and size; in Live
+// Preview they keep the note's font, as the widget does.
 function showTablesAsText(enabled) {
   return [
     tableBreaksField,
+    EditorView.theme({
+      ".is-live-preview & .cm-line.HyperMD-table-row": { fontFamily: "inherit", fontSize: "inherit" },
+    }),
     EditorState.transactionExtender.of((tr) => {
       const hl = searchHighlight;
       if (!hl) return null;

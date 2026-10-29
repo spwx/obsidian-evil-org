@@ -3905,6 +3905,25 @@ test("after unload, gh does not move", async () => {
   assert.equal(cursorLine(v), 6);
 });
 
+test("after a reload, a vimrc's gh still wins and the overrides work again", async () => {
+  // The vimrc loads after the plugin, as Vimrc Support does.
+  Vim.map("gh", "$", "normal");
+  const again = new PluginClass(app);
+  again.onload();
+  try {
+    const v = open(DOC);
+    gotoLine(v, 6);
+    await keys(v, "gh");
+    assert.equal(cursorLine(v), 6);
+    assert.equal(v.state.selection.main.head, v.state.doc.line(6).to - 1);
+    await keys(v, "dar");
+    assert.equal(text(v), "# A\na\n## B\nb\n## D\nd");
+  } finally {
+    again.onunload();
+    Vim.unmap("gh", "normal");
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const { name, fn } of tests) {

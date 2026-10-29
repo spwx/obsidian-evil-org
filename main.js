@@ -2570,6 +2570,19 @@ const tableVimKey = (edit) => `<OrgTable${edit[0].toUpperCase()}${edit.slice(1)}
 // The keys handleAltMove gives vim for M-j and M-k.
 const moveVimKey = (forward) => (forward ? "<OrgMoveSubtreeDown>" : "<OrgMoveSubtreeUp>");
 
+// Vim.mapCommand, once per engine. Vim tries the newest mapping first, and
+// keymap entries outlive the plugin (see installVimOverrides), so on a reload
+// the entries of the first load are kept in their places, below the
+// mappings a vimrc made after them: a user's `nmap gh g^` still wins. The
+// keys made are kept on the engine, which a reload doesn't replace.
+function mapOnce(Vim, ...args) {
+  const mapped = (Vim.evilOrgMapped ||= new Set());
+  const key = JSON.stringify(args);
+  if (mapped.has(key)) return;
+  Vim.mapCommand(...args);
+  mapped.add(key);
+}
+
 // Command ids and names are user-facing: hotkeys are bound to the ids.
 const COMMANDS = [
   ["cycle-local", "Cycle fold under cursor (TAB in org-mode)", localCycle],
@@ -2633,22 +2646,22 @@ module.exports = class EvilOrgPlugin extends Plugin {
     Vim.defineMotion("orgPasteAfter", pasteMotion(Vim, true));
     Vim.defineMotion("orgPasteBefore", pasteMotion(Vim, false));
     Vim.defineAction("orgPaste", guarded(orgPaste(Vim)));
-    Vim.mapCommand("p", "action", "orgPaste", { after: true, isEdit: true },
+    mapOnce(Vim, "p", "action", "orgPaste", { after: true, isEdit: true },
       { isEdit: true, context: "normal", motion: "orgPasteAfter" });
-    Vim.mapCommand("P", "action", "orgPaste", { after: false, isEdit: true },
+    mapOnce(Vim, "P", "action", "orgPaste", { after: false, isEdit: true },
       { isEdit: true, context: "normal", motion: "orgPasteBefore" });
     // `>`/`<` shadow the stock indent operator; doubled (`>>`) they still
     // pair up, since vim matches operators by name.
     Vim.defineOperator("orgIndent", orgIndent);
-    Vim.mapCommand(">", "operator", "orgIndent", { indentRight: true });
-    Vim.mapCommand("<", "operator", "orgIndent", { indentRight: false });
+    mapOnce(Vim, ">", "operator", "orgIndent", { indentRight: true });
+    mapOnce(Vim, "<", "operator", "orgIndent", { indentRight: false });
     // `d` shadows the stock delete operator the same way. In visual mode `x`,
     // `X` and `D` delete with it too.
     Vim.defineOperator("orgDelete", orgDelete(Vim));
-    Vim.mapCommand("d", "operator", "orgDelete", {});
-    Vim.mapCommand("D", "operator", "orgDelete", { linewise: true }, { context: "visual" });
+    mapOnce(Vim, "d", "operator", "orgDelete", {});
+    mapOnce(Vim, "D", "operator", "orgDelete", { linewise: true }, { context: "visual" });
     for (const [key, forward, visualLine] of [["x", true, false], ["X", false, true]]) {
-      Vim.mapCommand(key, "operatorMotion", null, undefined, {
+      mapOnce(Vim, key, "operatorMotion", null, undefined, {
         operator: "orgDelete", motion: "moveByCharacters", motionArgs: { forward },
         operatorMotionArgs: { visualLine }, context: "visual",
       });
@@ -2668,42 +2681,42 @@ module.exports = class EvilOrgPlugin extends Plugin {
       }
     }));
     for (const [letter, forward] of [["j", true], ["k", false]]) {
-      Vim.mapCommand(`<A-${letter}>`, "action", "orgMoveSubtree", { forward, alt: true }, { context: "normal", isEdit: true });
-      Vim.mapCommand(moveVimKey(forward), "action", "orgMoveSubtree", { forward }, { context: "normal", isEdit: true });
+      mapOnce(Vim, `<A-${letter}>`, "action", "orgMoveSubtree", { forward, alt: true }, { context: "normal", isEdit: true });
+      mapOnce(Vim, moveVimKey(forward), "action", "orgMoveSubtree", { forward }, { context: "normal", isEdit: true });
     }
     // The other table edits, on keys only handleAltMove gives vim.
     Vim.defineAction("orgTableEdit", guarded((cm, args) => {
       if (cm.cm6) tableEdit(cm.cm6, args.edit, args.repeat || 1);
     }));
     for (const edit of Object.values(TABLE_KEYS)) {
-      Vim.mapCommand(tableVimKey(edit), "action", "orgTableEdit", { edit }, { context: "normal", isEdit: true });
+      mapOnce(Vim, tableVimKey(edit), "action", "orgTableEdit", { edit }, { context: "normal", isEdit: true });
     }
     // `ar`/`ir` shadow vim's `a<register>`/`i<register>` text objects for `r`,
     // which vim leaves undefined.
     Vim.defineMotion("orgSubtree", subtreeTextObject);
-    Vim.mapCommand("ar", "motion", "orgSubtree", {});
-    Vim.mapCommand("ir", "motion", "orgSubtree", { textObjectInner: true });
+    mapOnce(Vim, "ar", "motion", "orgSubtree", {});
+    mapOnce(Vim, "ir", "motion", "orgSubtree", { textObjectInner: true });
     // `ae`/`ie` shadow `a<register>`/`i<register>` for `e` the same way.
     Vim.defineMotion("orgElement", elementTextObject);
-    Vim.mapCommand("ae", "motion", "orgElement", {});
-    Vim.mapCommand("ie", "motion", "orgElement", { textObjectInner: true });
+    mapOnce(Vim, "ae", "motion", "orgElement", {});
+    mapOnce(Vim, "ie", "motion", "orgElement", { textObjectInner: true });
     // `a|`/`i|` shadow Vim Motions' table cell text objects, as `ar`/`ir` do
     // its row ones. Stock vim has none: `|` alone is the column motion.
     Vim.defineMotion("orgCell", cellTextObject);
-    Vim.mapCommand("a|", "motion", "orgCell", {});
-    Vim.mapCommand("i|", "motion", "orgCell", { textObjectInner: true });
+    mapOnce(Vim, "a|", "motion", "orgCell", {});
+    mapOnce(Vim, "i|", "motion", "orgCell", { textObjectInner: true });
     // Visual block `y` in a table copies cells.
     this.patchPushText(Vim);
     // `gh` shadows vim's select mode (codemirror-vim has it in some builds,
     // such as the one in Vim Motions). Like `gg`, it is linewise for
     // operators and goes on the jump list.
     Vim.defineMotion("orgUpHeading", upHeadingMotion);
-    Vim.mapCommand("gh", "motion", "orgUpHeading", { linewise: true, toJumplist: true });
+    mapOnce(Vim, "gh", "motion", "orgUpHeading", { linewise: true, toJumplist: true });
     // `o`/`O` shadow the stock ones. Like those, a count or `.` runs the
     // action again before each repeat of the typed text.
     Vim.defineAction("orgOpenLine", guarded(openLine));
     for (const [key, after] of [["o", true], ["O", false]]) {
-      Vim.mapCommand(key, "action", "orgOpenLine", { after },
+      mapOnce(Vim, key, "action", "orgOpenLine", { after },
         { isEdit: true, interlaceInsertRepeat: true, context: "normal" });
     }
   }

@@ -2369,12 +2369,17 @@ function indentDecorations(view) {
 // so the line decorations don't reach them. Their own element takes the
 // indent of the line where they start. Obsidian gives a table a margin of
 // its own, which the indent goes on top of. CodeMirror ignores changes made
-// inside a widget, so this doesn't disturb the editor.
+// inside a widget, so this doesn't disturb the editor. A note embedded on a
+// line of its own (`![[note]]`) is drawn as an `internal-embed`, without the
+// `cm-embed-block` class the other block widgets have.
+const isBlockWidget = (el) =>
+  el.classList.contains("cm-embed-block") || el.classList.contains("internal-embed");
+
 function indentBlocks(view) {
   const doc = view.state.doc;
   const depths = indentDepths(doc);
   for (const el of view.contentDOM.children) {
-    if (!el.classList.contains("cm-embed-block")) continue;
+    if (!isBlockWidget(el)) continue;
     let pos;
     try {
       pos = view.posAtDOM(el);
@@ -2396,7 +2401,7 @@ function indentBlocks(view) {
 
 function unindentBlocks(view) {
   for (const el of view.contentDOM.children) {
-    if (el.classList.contains("cm-embed-block")) el.style.removeProperty("margin-inline-start");
+    if (isBlockWidget(el)) el.style.removeProperty("margin-inline-start");
   }
 }
 

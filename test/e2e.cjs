@@ -3195,6 +3195,37 @@ test("indent mode indents a table widget with its line, then drops it when turne
   assert.equal(table.style.getPropertyValue("margin-inline-start"), "");
 });
 
+// Live Preview's widget for a note embedded on a line of its own, which has
+// no cm-embed-block class.
+class NoteEmbedWidget extends WidgetType {
+  toDOM() {
+    const el = document.createElement("div");
+    el.className = "internal-embed markdown-embed inline-embed is-loaded";
+    return el;
+  }
+}
+const noteEmbedField = StateField.define({
+  create: (state) => Decoration.set(Decoration.replace({ widget: new NoteEmbedWidget(), block: true })
+    .range(state.doc.line(3).from, state.doc.line(3).to)),
+  update: (deco, tr) => deco.map(tr.changes),
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+test("indent mode indents a note embed with its line, then drops it when turned off", async () => {
+  await toggleIndent();
+  let v, embed;
+  try {
+    v = open("# A\n## B\n![[note]]\nb", [noteEmbedField]);
+    await frame();
+    embed = v.contentDOM.querySelector(".internal-embed");
+    assert.match(embed.style.getPropertyValue("margin-inline-start"), /^calc\(2 \* var\(--evil-org-indent.*\)$/);
+  } finally {
+    await toggleIndent();
+  }
+  v.dispatch({ effects: StateEffect.reconfigure.of([vim(), markdown(), plugin.extensions, noteEmbedField]) });
+  assert.equal(embed.style.getPropertyValue("margin-inline-start"), "");
+});
+
 test("turning indent mode off before a queued measure runs leaves the table unindented", async () => {
   await toggleIndent();
   let v, table;

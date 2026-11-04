@@ -2031,44 +2031,58 @@ function insertHeading(view, deeper) {
   if (Vim && normalMode(view)) Vim.handleKey(view.cm, "A", "user");
 }
 
-// org-indent-mode: each line is indented by its depth in the outline, in
-// display only. A heading of level L goes in L - 1 steps and the lines under
-// it L steps, so a heading starts where its parent's text does, as org's star
-// does. Text before the first heading isn't indented. The step is the CSS
-// variable --evil-org-indent, 1.5 editor font sizes unless a snippet sets it.
-// The margin goes outside Obsidian's own padding, so list items keep their
-// hanging indent, and wrapped lines line up with the first. It is !important
-// because Obsidian zeroes the margin of every line with !important. Like
-// scanLines, the depths are cached per doc.
-const depthCache = new WeakMap();
+// org-indent-mode: the lines under a heading are indented to its text, in
+// display only, as org-indent-mode does with org-hide-leading-stars. The
+// text of a heading of level L starts after its L `#`s and a space, L + 1
+// characters at the heading's size, and the lines under it are indented by
+// as much. Headings themselves aren't indented: their `#`s all start at the
+// left edge. Text before the first heading isn't indented. The margin goes
+// outside Obsidian's own padding, so list items keep their hanging indent,
+// and wrapped lines line up with the first. It is !important because
+// Obsidian zeroes the margin of every line with !important. Like scanLines,
+// the levels are cached per doc.
+const aboveCache = new WeakMap();
 
-function indentDepths(doc) {
-  let depths = depthCache.get(doc);
-  if (depths) return depths;
+// The level of the heading each line is under, 0 for a heading or a line
+// before the first heading.
+function levelsAbove(doc) {
+  let above = aboveCache.get(doc);
+  if (above) return above;
   const levels = headingLevels(doc);
-  depths = new Uint8Array(levels.length);
+  above = new Uint8Array(levels.length);
   let level = 0;
   for (let n = 1; n < levels.length; n++) {
     if (levels[n]) level = levels[n];
-    depths[n] = levels[n] ? level - 1 : level;
+    above[n] = levels[n] ? 0 : level;
   }
-  depthCache.set(doc, depths);
-  return depths;
+  aboveCache.set(doc, above);
+  return above;
 }
 
-const INDENT_STEP = "var(--evil-org-indent, calc(1.5 * var(--font-text-size, 16px)))";
+// A heading's size over body text's, as a number: Obsidian's default --h1-size
+// to --h6-size, without their em. A snippet can set --evil-org-h1 to
+// --evil-org-h6 for a theme that changes them; uniform headings sets them to 1.
+const HEADING_SIZES = [1.618, 1.462, 1.318, 1.188, 1.076, 1];
+const headingRatio = (level) => `var(--evil-org-h${level}, ${HEADING_SIZES[level - 1]})`;
 
-const indentLines = Array.from({ length: MAX_LEVEL + 1 }, (_, d) => Decoration.line({
+// The indent of the lines under a heading, as a margin of a line in the body
+// font, where ch is a character of body text: up to the heading's text, the
+// level's `#`s and a space at the heading's size.
+const textMargin = (level) => `calc(${level + 1} * 1ch * ${headingRatio(level)})`;
+
+const indentLines = Array.from({ length: MAX_LEVEL + 1 }, (_, level) => Decoration.line({
   class: "evil-org-indent",
-  attributes: { style: `margin-inline-start: calc(${d} * ${INDENT_STEP}) !important` },
+  attributes: { style: `margin-inline-start: ${textMargin(level)} !important` },
 }));
 
 // org-bullets: in Live Preview, where Obsidian hides a heading's `#`s, a
-// glyph for its level takes their place, one step wide, so the heading's text
-// lines up with its body as in org. It is drawn at the size of body text, to
-// fit in the step, and goes after the hidden `#`s, so that Obsidian's fold
-// arrow at the start of the line doesn't cover it. On a line the selection
-// touches, Obsidian shows the `#`s, and the glyph goes away.
+// glyph for its level takes the place of the last `#`, and the others leave
+// blank space, as org-hide-leading-stars does: `### C` shows as `  ✸ C`.
+// The glyph goes in a box one character wide, followed by a space, at the
+// heading's size like the `#`s, so the heading's text doesn't move when the
+// cursor reaches the line and Obsidian shows the `#`s in place of the glyph.
+// It goes after the hidden `#`s, so that Obsidian's fold arrow at the start
+// of the line doesn't cover it.
 const BULLETS = ["◉", "○", "✸", "✿"];
 
 class BulletWidget extends WidgetType {
@@ -2085,7 +2099,8 @@ class BulletWidget extends WidgetType {
     const span = document.createElement("span");
     span.className = "evil-org-bullet";
     span.textContent = BULLETS[(this.level - 1) % BULLETS.length];
-    span.style.cssText = `display: inline-block; width: ${INDENT_STEP}; text-indent: 0; font-size: var(--font-text-size, 16px);`;
+    span.style.cssText = `display: inline-block; box-sizing: content-box; width: 1ch; ` +
+      `padding-inline: calc(${this.level - 1} * 1ch) 1ch; text-align: center; text-indent: 0;`;
     return span;
   }
 }
@@ -2353,12 +2368,12 @@ function visibleLines(view) {
 
 function indentDecorations(view) {
   const state = view.state;
-  const depths = indentDepths(state.doc);
+  const above = levelsAbove(state.doc);
   const levels = headingLevels(state.doc);
   const preview = livePreview(state);
   const out = [];
   for (const line of visibleLines(view)) {
-    if (depths[line.number]) out.push(indentLines[depths[line.number]].range(line.from));
+    if (above[line.number]) out.push(indentLines[above[line.number]].range(line.from));
     const level = levels[line.number];
     if (level && preview && !touchesSelection(state, line)) out.push(bullets[level].range(line.from + line.text.match(/^#+\s*/)[0].length));
   }
@@ -2377,7 +2392,7 @@ const isBlockWidget = (el) =>
 
 function indentBlocks(view) {
   const doc = view.state.doc;
-  const depths = indentDepths(doc);
+  const above = levelsAbove(doc);
   for (const el of view.contentDOM.children) {
     if (!isBlockWidget(el)) continue;
     let pos;
@@ -2386,15 +2401,15 @@ function indentBlocks(view) {
     } catch {
       continue;
     }
-    const depth = pos <= doc.length ? depths[doc.lineAt(pos).number] : 0;
+    const level = pos <= doc.length ? above[doc.lineAt(pos).number] : 0;
     const base = el.classList.contains("cm-table-widget") ? " - var(--size-4-4)" : "";
-    const margin = depth ? `calc(${depth} * ${INDENT_STEP}${base})` : "";
-    const priority = depth ? "important" : "";
+    const margin = level ? `calc(${textMargin(level)}${base})` : "";
+    const priority = level ? "important" : "";
     // This runs on every geometry change; write only what differs, since
     // each write is a style mutation.
     if (el.style.getPropertyValue("margin-inline-start") === margin &&
         el.style.getPropertyPriority("margin-inline-start") === priority) continue;
-    if (depth) el.style.setProperty("margin-inline-start", margin, priority);
+    if (level) el.style.setProperty("margin-inline-start", margin, priority);
     else el.style.removeProperty("margin-inline-start");
   }
 }
@@ -2502,6 +2517,7 @@ const compactHeadings = [
 // The text in a heading line inherits the line's size.
 const uniformHeadings = EditorView.theme({
   "& .cm-line.HyperMD-header": { fontSize: "inherit !important", lineHeight: "var(--line-height-normal) !important" },
+  "&": Object.fromEntries(HEADING_SIZES.map((_, i) => [`--evil-org-h${i + 1}`, "1"])),
 });
 
 const DEFAULT_SETTINGS = {

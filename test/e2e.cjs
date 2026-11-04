@@ -3088,7 +3088,7 @@ test("<C-o> after gh goes back", async () => {
 
 const toggleIndent = () => plugin.commands.find((c) => c.id === "toggle-indent").callback();
 
-// Each line's indent in steps of --evil-org-indent, from the DOM.
+// Each line's indent in characters of the heading it is under, from the DOM.
 function indentSteps(view) {
   return [...view.contentDOM.querySelectorAll(".cm-line")].map((el) => {
     const m = (el.getAttribute("style") || "").match(/calc\((\d+) \*/);
@@ -3105,11 +3105,11 @@ test("every setting is off by default", async () => {
   assert.deepEqual(indentSteps(v), [0, 0, 0, 0, 0, 0, 0, 0]);
 });
 
-test("indent mode puts a heading at its parent's text and its text one step in", async () => {
+test("indent mode indents the lines under a heading to its text, and no heading", async () => {
   await toggleIndent();
   try {
     const v = open("intro\n" + DOC);
-    assert.deepEqual(indentSteps(v), [0, 0, 1, 1, 2, 2, 3, 1, 2]);
+    assert.deepEqual(indentSteps(v), [0, 0, 2, 0, 3, 0, 4, 0, 3]);
   } finally {
     await toggleIndent();
   }
@@ -3120,10 +3120,10 @@ test("indent mode follows edits and leaves # lines in code blocks alone", async 
   await toggleIndent();
   try {
     const v = open("# A\n```\n## x\n```\na");
-    assert.deepEqual(indentSteps(v), [0, 1, 1, 1, 1]);
+    assert.deepEqual(indentSteps(v), [0, 2, 2, 2, 2]);
     v.dispatch({ changes: { from: v.state.doc.line(5).from, insert: "## " } });
     v.dispatch({ changes: { from: v.state.doc.length, insert: "\nb" } });
-    assert.deepEqual(indentSteps(v), [0, 1, 1, 1, 1, 2]);
+    assert.deepEqual(indentSteps(v), [0, 2, 2, 2, 0, 3]);
   } finally {
     await toggleIndent();
   }
@@ -3185,7 +3185,7 @@ test("indent mode indents a table widget with its line, then drops it when turne
     v = open("# A\n## B\n| x |\n| - |\nb", [tableField]);
     await frame();
     table = v.contentDOM.querySelector(".cm-table-widget");
-    assert.match(table.style.getPropertyValue("margin-inline-start"), /^calc\(2 \* .* - var\(--size-4-4\)\)$/);
+    assert.match(table.style.getPropertyValue("margin-inline-start"), /^calc\(calc\(3 \* 1ch \* var\(--evil-org-h2, 1\.462\)\) - var\(--size-4-4\)\)$/);
     // jsdom drops the !important that Obsidian's own !important margin needs,
     // so that part is only seen in Obsidian.
   } finally {
@@ -3218,7 +3218,7 @@ test("indent mode indents a note embed with its line, then drops it when turned 
     v = open("# A\n## B\n![[note]]\nb", [noteEmbedField]);
     await frame();
     embed = v.contentDOM.querySelector(".internal-embed");
-    assert.match(embed.style.getPropertyValue("margin-inline-start"), /^calc\(2 \* var\(--evil-org-indent.*\)$/);
+    assert.match(embed.style.getPropertyValue("margin-inline-start"), /^calc\(calc\(3 \* 1ch \* var\(--evil-org-h2, 1\.462\)\)\)$/);
   } finally {
     await toggleIndent();
   }

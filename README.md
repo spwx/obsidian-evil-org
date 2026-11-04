@@ -328,8 +328,8 @@ You cannot map `Alt-Enter` in a vimrc file. Obsidian gets its hotkeys before Vim
 
 Indent mode indents the lines of a note by the outline (`org-indent-mode`). It changes only how the editor shows the lines. It does not change the text of the note.
 
-- A heading of level 1 has no indent. A heading of level 2 has an indent of one step. A heading of level 3 has two steps, and so on.
-- The lines under a heading have one step more indent than the heading.
+- Headings have no indent. The `#` characters of every heading start at the left edge.
+- The lines under a heading have the same indent as the text of the heading. Thus, under a heading of level 2 (`## `), the indent is 3 characters at the size of that heading.
 - Text before the first heading has no indent.
 - Wrapped lines align with the first line.
 - List items keep their indent.
@@ -344,7 +344,7 @@ In Live Preview, indent mode shows a bullet in place of the `#` characters of a 
 | 3 | `✸` |
 | 4 | `✿` |
 
-At level 5, the sequence starts again. The bullet is one step wide. Thus, the text of a heading aligns with the lines under it. When the cursor is on a heading, the editor shows the `#` characters in place of the bullet. Source mode does not show bullets.
+At level 5, the sequence starts again. The bullet has the size of the heading. It replaces the last `#` character, and the other `#` characters show as blank space, as with `org-hide-leading-stars`. For example, `### C` shows as `  ✸ C`. When the cursor is on a heading, the editor shows the `#` characters in place of the bullet. The text of the heading does not move. Source mode does not show bullets.
 
 To set indent mode to on or off, use one of these:
 
@@ -354,12 +354,6 @@ To set indent mode to on or off, use one of these:
 The setting applies to all notes. It stays after you restart Obsidian.
 
 Indent mode operates only in the editor. It does not operate in reading view.
-
-One step is 1.5 times the font size of the editor. To change the step, set the `--evil-org-indent` CSS variable in a [CSS snippet](https://help.obsidian.md/snippets). For example:
-
-```css
-.markdown-source-view { --evil-org-indent: 2ch; }
-```
 
 ### Compact headings
 

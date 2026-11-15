@@ -2078,11 +2078,12 @@ const indentLines = Array.from({ length: MAX_LEVEL + 1 }, (_, level) => Decorati
 // org-bullets: in Live Preview, where Obsidian hides a heading's `#`s, a
 // glyph for its level takes the place of the last `#`, and the others leave
 // blank space, as org-hide-leading-stars does: `### C` shows as `  ✸ C`.
-// The glyph goes in a box one character wide, followed by a space, at the
-// heading's size like the `#`s, so the heading's text doesn't move when the
-// cursor reaches the line and Obsidian shows the `#`s in place of the glyph.
-// It goes after the hidden `#`s, so that Obsidian's fold arrow at the start
-// of the line doesn't cover it.
+// The glyph goes in a box one character wide, followed by a space. The box
+// is at the heading's size like the `#`s, so the heading's text doesn't move
+// when the cursor reaches the line and Obsidian shows the `#`s in place of
+// the glyph. The glyph inside the box is drawn smaller than the text.
+// The box goes after the hidden `#`s, so that Obsidian's fold arrow at the
+// start of the line doesn't cover it.
 const BULLETS = ["◉", "○", "✸", "✿"];
 
 class BulletWidget extends WidgetType {
@@ -2098,9 +2099,11 @@ class BulletWidget extends WidgetType {
   toDOM() {
     const span = document.createElement("span");
     span.className = "evil-org-bullet";
-    span.textContent = BULLETS[(this.level - 1) % BULLETS.length];
     span.style.cssText = `display: inline-block; box-sizing: content-box; width: 1ch; ` +
       `padding-inline: calc(${this.level - 1} * 1ch) 1ch; text-align: center; text-indent: 0;`;
+    const glyph = span.appendChild(document.createElement("span"));
+    glyph.textContent = BULLETS[(this.level - 1) % BULLETS.length];
+    glyph.style.cssText = "font-size: 0.75em;";
     return span;
   }
 }

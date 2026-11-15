@@ -2203,12 +2203,15 @@ function isTableBreak(doc, from, to) {
 // moves the selection, so Obsidian never draws the widget with the cursor in
 // it (it would focus a cell). In Source mode the highlights do nothing.
 // Obsidian sets a table's text lines in the code font and size; in Live
-// Preview they keep the note's font, as the widget does.
+// Preview they keep the note's font, as the widget does. Markup in them, such
+// as inline code, takes the line's font too: a font of other widths would
+// push the rest of its row out of line with the other rows.
 function showTablesAsText(enabled) {
   return [
     tableBreaksField,
     EditorView.theme({
       ".is-live-preview & .cm-line.HyperMD-table-row": { fontFamily: "inherit", fontSize: "inherit" },
+      ".is-live-preview & .cm-line.HyperMD-table-row *": { fontFamily: "inherit", fontSize: "inherit" },
     }),
     EditorState.transactionExtender.of((tr) => {
       const hl = searchHighlight;

@@ -2868,6 +2868,48 @@ module.exports = class EvilOrgPlugin extends Plugin {
     e.stopPropagation();
   }
 
+  // In the editor of a Live Preview table cell, which has a vim of its own
+  // over the cell's text, the keys that move through the whole note (`gg`,
+  // `G`, `Ctrl-u`, `Ctrl-d`, `/` and `?`) move through the note instead: the
+  // note's editor takes the cursor, at the cell's, and the focus, and vim
+  // gets the keys there, with any count pending in the cell.
+  handleCellEscape(e) {
+    if (e.altKey || e.metaKey || e.isComposing) return;
+    const Vim = this.patchedVim;
+    const target = e.target;
+    if (!Vim || !target || typeof target.closest !== "function") return;
+    const widgetEl = target.closest(".cm-table-widget");
+    const tile = widgetEl && (widgetEl.cmTile || widgetEl.cmView);
+    const owner = tile && tile.widget && tile.widget.editor;
+    const cellEditor = owner && owner.tableCell;
+    const cellView = cellEditor && cellEditor.cm;
+    const view = owner && owner.cm;
+    const cell = cellEditor && cellEditor.cell;
+    const table = cellEditor && cellEditor.table;
+    if (!cellView || !view || !cell || !table || cellView.contentDOM !== target) return;
+    const cellVim = getVimState(cellView);
+    if (!cellVim || !getVimState(view) || cellVim.insertMode || cellVim.visualMode || cellVim.inputState.operator) return;
+    const pending = cellVim.inputState.keyBuffer.join("");
+    let vimKey = null;
+    if (e.ctrlKey) {
+      if (!e.shiftKey && (e.key === "u" || e.key === "d")) vimKey = `<C-${e.key}>`;
+    } else if (e.key === "g" && /^\d*g$/.test(pending)) {
+      vimKey = "gg";
+    } else if ((e.key === "G" || e.key === "/" || e.key === "?") && /^\d*$/.test(pending)) {
+      vimKey = e.key;
+    }
+    if (!vimKey || (vimKey !== "gg" && !/^\d*$/.test(pending))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const count = pending.replace(/g$/, "");
+    if (pending) Vim.handleKey(cellView.cm, "<Esc>", "user");
+    const from = table.start + cell.start;
+    const head = Math.min(from + cellView.state.selection.main.head, table.start + cell.end);
+    view.dispatch({ selection: { anchor: Math.min(head, view.state.doc.length) }, userEvent: "select" });
+    view.focus();
+    for (const k of [...count, ...(vimKey === "gg" ? ["g", "g"] : [vimKey])]) Vim.handleKey(view.cm, k, "user");
+  }
+
   // Follow the link, or tag, at the cursor of the active note. Returns false
   // where there is none.
   followLink() {
@@ -2978,6 +3020,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
       this.registerDomEvent(doc, "keydown", (e) => {
         this.handleAltMove(e);
         this.handleEnter(e);
+        guarded(() => this.handleCellEscape(e))();
       }, { capture: true });
       for (const type of ["pointerdown", "mousedown", "click"]) {
         this.registerDomEvent(doc, type, guarded((e) => this.handleTableClick(e)), { capture: true });

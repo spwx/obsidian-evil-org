@@ -158,6 +158,10 @@ In Live Preview, Obsidian shows a table in a table editor of its own. Vim does n
 - A visual selection that starts or ends in a table shows the table as text.
 - Without Vim, Obsidian's table editor operates as usual.
 
+### `gg`, `G`, `Ctrl-u`, `Ctrl-d`, `/`, and `?` in a table cell
+
+When the [table editor](#table-editor) is off, a cell of Obsidian's table editor in Live Preview has a Vim of its own, which operates only in the text of the cell. In Vim normal mode in such a cell, these keys operate in the note instead of in the cell: the cursor goes to the same place in the note, and then the key operates there. A count also operates, for example `5G` goes to line 5 of the note.
+
 ### Line commands: `V`, `dd`, `yy`, `cc`, `u`, `p`, `P`
 
 - `V`: When you select a folded heading, the selection includes all of its subtree.

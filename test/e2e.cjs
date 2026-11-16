@@ -364,6 +364,86 @@ test("Tab and S-Tab in a Live Preview table cell's editor are left to Obsidian",
   }
 });
 
+// A Live Preview table cell's editor, with vim, inside a stub of Obsidian's
+// table widget in the note's editor v: the widget knows the note's editor,
+// and that editor its cell editor and the cell's offsets in the table.
+function cellEditorIn(v, tableStart, cellStart, cellText) {
+  const widget = document.createElement("div");
+  widget.className = "cm-embed-block cm-table-widget";
+  const td = document.createElement("td");
+  widget.appendChild(td);
+  // Outside v's content: Obsidian's widget keeps the cell's keys from v.
+  document.body.appendChild(widget);
+  const cellView = new EditorView({
+    parent: td,
+    state: EditorState.create({ doc: cellText, extensions: [vim(), markdown(), plugin.extensions] }),
+  });
+  const owner = { cm: v, tableCell: { cm: cellView, table: { start: tableStart }, cell: { start: cellStart, end: cellStart + cellText.length } } };
+  widget.cmView = { widget: { editor: owner } };
+  return { cellView, remove: () => { cellView.destroy(); widget.remove(); } };
+}
+
+test("gg, G, C-u, C-d, / and ? in a Live Preview table cell's editor move through the note", async () => {
+  const doc = "top\n\n| a | bcd |\n| - | --- |\n| e | f   |\n\nend\nlast";
+  const tableStart = doc.indexOf("|");
+  const cellStart = doc.indexOf("bcd") - tableStart;
+  const keydown = (el, key, opts = {}) => {
+    const event = new window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...opts });
+    el.dispatchEvent(event);
+    return event;
+  };
+  for (const [seq, expect] of [
+    [["g", "g"], () => 0],
+    [["G"], (v) => v.state.doc.line(v.state.doc.lines).from],
+    [["2", "G"], (v) => v.state.doc.line(2).from],
+    [["3", "g", "g"], (v) => v.state.doc.line(3).from],
+  ]) {
+    const v = open(doc);
+    const { cellView, remove } = cellEditorIn(v, tableStart, cellStart, "bcd");
+    try {
+      cellView.dispatch({ selection: { anchor: 1 } });
+      for (const k of seq.slice(0, -1)) Vim.handleKey(getCM(cellView), k, "user");
+      assert.ok(keydown(cellView.contentDOM, seq.at(-1)).defaultPrevented, seq.join(""));
+      await tick();
+      assert.equal(v.state.selection.main.head, expect(v), seq.join(""));
+      assert.equal(getCM(cellView).state.vim.inputState.keyBuffer.length, 0);
+    } finally {
+      remove();
+    }
+  }
+  // C-d starts from the cell's place in the note.
+  for (const [key, opts] of [["d", { ctrlKey: true }], ["u", { ctrlKey: true }], ["/", {}], ["?", { shiftKey: true }]]) {
+    const v = open(doc);
+    const { cellView, remove } = cellEditorIn(v, tableStart, cellStart, "bcd");
+    const seen = [];
+    const stock = Vim.handleKey;
+    Vim.handleKey = (cm, k, origin) => (cm === getCM(v) && seen.push([k, cm.cm6.state.selection.main.head]), stock.call(Vim, cm, k, origin));
+    try {
+      cellView.dispatch({ selection: { anchor: 2 } });
+      assert.ok(keydown(cellView.contentDOM, key, opts).defaultPrevented, key);
+      const vimKey = opts.ctrlKey ? `<C-${key}>` : key;
+      assert.deepEqual(seen, [[vimKey, doc.indexOf("bcd") + 2]]);
+    } finally {
+      Vim.handleKey = stock;
+      remove();
+    }
+  }
+});
+
+test("G in a Live Preview table cell's editor in insert mode stays in the cell", async () => {
+  const v = open("| a |\n| - |");
+  const { cellView, remove } = cellEditorIn(v, 0, 2, "a");
+  try {
+    Vim.handleKey(getCM(cellView), "i", "user");
+    const event = new window.KeyboardEvent("keydown", { key: "G", bubbles: true, cancelable: true });
+    cellView.contentDOM.dispatchEvent(event);
+    assert.equal(v.state.selection.main.head, 0);
+    assert.ok(getCM(cellView).state.vim.insertMode);
+  } finally {
+    remove();
+  }
+});
+
 test("S-Tab after another command goes to overview", async () => {
   const v = open(DOC);
   await keys(v, "<S-Tab>");

@@ -3133,6 +3133,30 @@ test("ae and ie with nothing around them do nothing", async () => {
 
 // --- gh ------------------------------------------------------------------------
 
+test("C-d and C-u move the cursor half the window, keeping its column", async () => {
+  const v = open(Array.from({ length: 100 }, (_, i) => `line ${i + 1}`).join("\n"));
+  // jsdom lays nothing out: lines 14px high, a window of 20 lines.
+  const doc = v.state.doc;
+  const block = (n) => ({ from: doc.line(n).from, to: doc.line(n).to, top: (n - 1) * 14, height: 14 });
+  v.lineBlockAt = (pos) => block(doc.lineAt(pos).number);
+  v.lineBlockAtHeight = (y) => block(Math.max(1, Math.min(doc.lines, Math.floor(y / 14) + 1)));
+  Object.defineProperty(v, "defaultLineHeight", { value: 14, configurable: true });
+  Object.defineProperty(v.scrollDOM, "clientHeight", { value: 280, configurable: true });
+  gotoLine(v, 1);
+  await keys(v, "ll<C-d>");
+  assert.equal(cursorLine(v), 11);
+  assert.equal(v.state.selection.main.head - v.state.doc.line(11).from, 2);
+  await keys(v, "<C-d>");
+  assert.equal(cursorLine(v), 21);
+  await keys(v, "<C-u>");
+  assert.equal(cursorLine(v), 11);
+  await keys(v, "<C-u><C-u>");
+  assert.equal(cursorLine(v), 1);
+  gotoLine(v, 98);
+  await keys(v, "<C-d>");
+  assert.equal(cursorLine(v), 100);
+});
+
 test("gh from a body line goes to its heading, again to the parent", async () => {
   const v = open(DOC);
   gotoLine(v, 6);
@@ -4060,7 +4084,7 @@ test("unload restores every Vim engine the plugin patched", async () => {
   assert.ok(!CodeMirror.prototype.findPosV.stock);
   assert.ok(!Vim.getRegisterController().pushText.stock);
   assert.deepEqual(calls.slice(installed).sort(), [
-    "action orgMoveSubtree", "action orgOpenLine", "action orgPaste", "action orgTableEdit", "motion expandToLine", "motion orgCell", "motion orgElement", "motion orgPasteAfter", "motion orgPasteBefore",
+    "action orgMoveSubtree", "action orgOpenLine", "action orgPaste", "action orgTableEdit", "motion expandToLine", "motion orgCell", "motion orgElement", "motion orgHalfPage", "motion orgPasteAfter", "motion orgPasteBefore",
     "motion orgSubtree", "motion orgUpHeading", "operator orgDelete", "operator orgIndent",
   ]);
   // Vim, patched twice, is back to stock: dd on a folded heading deletes one line.

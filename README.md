@@ -162,6 +162,10 @@ In Live Preview, Obsidian shows a table in a table editor of its own. Vim does n
 
 When the [table editor](#table-editor) is off, a cell of Obsidian's table editor in Live Preview has a Vim of its own, which operates only in the text of the cell. In Vim normal mode in such a cell, these keys operate in the note instead of in the cell: the cursor goes to the same place in the note, and then the key operates there. A count also operates, for example `5G` goes to line 5 of the note.
 
+### `Ctrl-d` / `Ctrl-u`: Scroll half a window
+
+`Ctrl-d` scrolls down half the height of the window, and `Ctrl-u` scrolls up half the height of the window. The cursor moves the same distance, so it stays at the same height on the screen. Lines that are taller than the text, for example the rows of a Live Preview table or headings, do not make the scroll longer. With a count, for example `5 Ctrl-d`, the cursor moves that many lines, as in Vim.
+
 ### Line commands: `V`, `dd`, `yy`, `cc`, `u`, `p`, `P`
 
 - `V`: When you select a folded heading, the selection includes all of its subtree.

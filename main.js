@@ -555,6 +555,116 @@ function foldAwareFindPosV(stock) {
   return patched;
 }
 
+// `Ctrl-d` and `Ctrl-u` scroll half the window and move the cursor the same
+// distance, so that it stays where it was on the screen. Vim's own move the
+// cursor half a window's worth of lines and scroll as far as the cursor went:
+// over lines taller than the text, such as table rows or headings, that was
+// more than half a window. And CodeMirror puts every place in a Live Preview
+// table at the top of the table, so from a table row, as from a cell's
+// editor, it scrolled the distance from the top of the table on top of that.
+// With a count, they move that many lines, as vim's do.
+function halfPageMotion(cm, head, args, vim) {
+  const view = cm.cm6;
+  if (!view || args.repeatIsExplicit) return this.moveByScroll(cm, head, args, vim);
+  const scroller = view.scrollDOM;
+  const half = Math.floor(scroller.clientHeight / 2);
+  if (!(half > 0)) return this.moveByScroll(cm, head, args, vim);
+  const doc = view.state.doc;
+  const from = cm.indexFromPos(head);
+  const dir = args.forward ? 1 : -1;
+  // To the nearest line: the line half a line below where the cursor's line
+  // would go. Going to the one there, rows taller than a line moved the
+  // cursor up the screen a little more at each key.
+  const y = Math.max(0, lineTop(view, from) + dir * half + view.defaultLineHeight / 2);
+  const to = posAtHeight(view, y, from);
+  scroller.scrollTop += dir * half;
+  // Vim then scrolls the cursor into view. In a Live Preview table
+  // CodeMirror takes the cursor to be the whole table, and scrolled to its
+  // end; the cursor is in view already, so skip that once.
+  if (tableWidgetAt(view, view.lineBlockAt(to)) && !Object.hasOwn(cm, "scrollIntoView")) {
+    cm.scrollIntoView = function () {
+      delete this.scrollIntoView;
+    };
+    queueMicrotask(() => delete cm.scrollIntoView);
+  }
+  const line = doc.lineAt(to);
+  return new head.constructor(line.number - 1, to - line.from);
+}
+
+// The top of the screen line of pos, from the top of the document.
+function lineTop(view, pos) {
+  const block = view.lineBlockAt(pos);
+  const table = tableWidgetAt(view, block);
+  if (table) return table.tops[tableWidgetRowOf(table, view.state.doc.lineAt(pos).number)];
+  if (block.height > 1.5 * view.defaultLineHeight) {
+    const coords = view.coordsAtPos(pos);
+    if (coords) return coords.top - view.documentTop;
+  }
+  return block.top;
+}
+
+// The place at height y from the top of the document: on the line there, or
+// the row of a Live Preview table, in the column of from, as vim keeps it
+// going up and down.
+function posAtHeight(view, y, from) {
+  const doc = view.state.doc;
+  const ch = from - doc.lineAt(from).from;
+  const block = view.lineBlockAtHeight(y);
+  const table = tableWidgetAt(view, block);
+  let line = doc.lineAt(block.from);
+  if (table) {
+    let i = 0;
+    while (i + 1 < table.tops.length && table.tops[i + 1] <= y) i++;
+    line = doc.line(table.lines[i]);
+    // Obsidian's table moves a cursor outside its cells to its first or last
+    // cell, so stay between the row's outer pipes (a row may leave off the
+    // closing one).
+    const { pipes } = markdownTableRow(doc, line.number);
+    const closed = pipes.length > 1 && /\|\s*$/.test(line.text);
+    const end = closed ? pipes.at(-1) - 1 : line.length;
+    return line.from + Math.max(pipes[0] + 1, Math.min(ch, end));
+  } else if (block.height > 1.5 * view.defaultLineHeight) {
+    const coords = view.coordsAtPos(from);
+    const x = coords ? coords.left : view.contentDOM.getBoundingClientRect().left;
+    const pos = view.posAtCoords({ x, y: y + view.documentTop }, false);
+    if (pos >= block.from && pos <= block.to) return pos;
+  }
+  return line.from + Math.min(ch, line.length);
+}
+
+// The Live Preview table drawn as a widget over block, or null: the lines of
+// its rows, the delimiter row left out, and the top of each row in the
+// widget from the top of the document.
+function tableWidgetAt(view, block) {
+  const doc = view.state.doc;
+  const first = doc.lineAt(block.from).number;
+  const last = doc.lineAt(block.to).number;
+  if (last === first || !markdownTableRow(doc, first)) return null;
+  const widget = [...view.contentDOM.querySelectorAll(".cm-table-widget")]
+    .find((el) => doc.lineAt(view.posAtDOM(el)).number === first);
+  const table = widget && widget.querySelector("table");
+  if (!table) return null;
+  const lines = [];
+  let delimiter = false;
+  for (let n = first; n <= last; n++) {
+    const row = markdownTableRow(doc, n);
+    if (!row) break;
+    if (row.delimiter && !delimiter) delimiter = true;
+    else lines.push(n);
+  }
+  const rows = [...table.rows];
+  if (rows.length !== lines.length) return null;
+  return { lines, tops: rows.map((r) => r.getBoundingClientRect().top - view.documentTop) };
+}
+
+// The row of a table widget that line n shows: the header row for the
+// delimiter row.
+function tableWidgetRowOf(table, n) {
+  let i = 0;
+  while (i + 1 < table.lines.length && table.lines[i + 1] <= n) i++;
+  return i;
+}
+
 const firstNonBlank = (text) => text.length - text.trimStart().length;
 
 const posBefore = (a, b) => a.line < b.line || (a.line === b.line && a.ch < b.ch);
@@ -2684,6 +2794,9 @@ module.exports = class EvilOrgPlugin extends Plugin {
       });
       Vim.defineOperator("orgIndent", stockIndent);
       Vim.defineOperator("orgDelete", stockDelete(Vim));
+      Vim.defineMotion("orgHalfPage", function (cm, head, args, vim) {
+        return this.moveByScroll(cm, head, args, vim);
+      });
     }));
     // Alt-j/Alt-k go to vim only once its mappings for them are in place.
     this.altMoveVim = guarded(() => this.overrideVim(Vim))() === false ? null : Vim;
@@ -2761,6 +2874,18 @@ module.exports = class EvilOrgPlugin extends Plugin {
     // operators and goes on the jump list.
     Vim.defineMotion("orgUpHeading", upHeadingMotion);
     mapOnce(Vim, "gh", "motion", "orgUpHeading", { linewise: true, toJumplist: true });
+    // `Ctrl-d`/`Ctrl-u` shadow the stock ones.
+    Vim.defineMotion("orgHalfPage", function (cm, head, args, vim) {
+      try {
+        return halfPageMotion.call(this, cm, head, args, vim);
+      } catch (e) {
+        console.error("Evil Org:", e);
+        return this.moveByScroll(cm, head, args, vim);
+      }
+    });
+    for (const [key, forward] of [["<C-d>", true], ["<C-u>", false]]) {
+      mapOnce(Vim, key, "motion", "orgHalfPage", { forward, explicitRepeat: true });
+    }
     // `o`/`O` shadow the stock ones. Like those, a count or `.` runs the
     // action again before each repeat of the typed text.
     Vim.defineAction("orgOpenLine", guarded(openLine));

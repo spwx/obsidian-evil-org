@@ -1,7 +1,7 @@
 {
   "id": "evil-org",
   "name": "Evil Org",
-  "version": "1.15.0",
+  "version": "1.16.0",
   "minAppVersion": "1.0.0",
   "description": "Add org-mode keys to Vim mode. Tab and Shift-Tab fold headings. >> and << promote and demote subtrees. Alt-j and Alt-k move subtrees and table rows. Alt-h and Alt-l move table columns. In a table cell, gg, G, /, n and Ctrl-o operate in the note.",
   "author": "spwx",

@@ -8,7 +8,7 @@ The plugin uses Markdown headings as org-mode headlines. A subtree is a heading 
 
 Set **Settings → Editor → Vim key bindings** to on.
 
-The [keys](#keys) operate only in Vim normal mode and Vim visual mode. They do not change insert mode, except the [table keys](#tab-shift-tab-and-enter-in-a-table). The [commands](#commands) and [indent mode](#indent-mode) operate in all modes, also when Vim mode is off.
+The [keys](#keys) operate only in Vim normal mode and Vim visual mode. They do not change insert mode, except the [table keys](#tab-shift-tab-and-enter-in-a-table). The table keys are off by default (see [Table editor](#table-editor)). The [commands](#commands) and [indent mode](#indent-mode) operate in all modes, also when Vim mode is off.
 
 ## Keys
 
@@ -51,6 +51,10 @@ In a table, `Shift-Tab` moves to the previous cell.
 3. At all other times, `Shift-Tab` shows the overview.
 
 Text before the first heading does not change. If the cursor is in text that becomes folded, the cursor moves to the visible line above it.
+
+### Table editor
+
+The table keys in this section and the next four are off by default. To use them, set **Settings → Evil Org → Table editor** to on. When it is off, these keys do in a table what they do outside a table, and Obsidian shows its own table editor in Live Preview.
 
 ### `Tab`, `Shift-Tab`, and `Enter` in a table
 
@@ -411,6 +415,8 @@ To install the plugin manually, do these steps:
 Obsidian does not have a public API for its Vim mode. Thus, the plugin uses interfaces that Obsidian does not document. An Obsidian update can stop the plugin. When you disable the plugin, Vim goes back to its standard behavior.
 
 In Vim normal mode, the plugin gets `Alt-j` and `Alt-k` (or `Ctrl-j` and `Ctrl-k`, see [Meta key](#meta-key)) before Obsidian does. Thus, an Obsidian hotkey on `Alt-j` or `Alt-k` does not operate in Vim normal mode.
+
+When the [table editor](#table-editor) is on, the following applies to tables.
 
 In Vim normal mode, the plugin gets `Enter` in a table, on a link, and in a list item with a checkbox, and in a table it gets `Alt` with `h`, `l`, an arrow, or `Shift`, before Obsidian and Vim do.
 

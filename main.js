@@ -40,6 +40,13 @@ function insertMode(view) {
   return !!v && !!v.insertMode;
 }
 
+// The editor of a cell of a Live Preview table: Obsidian's own, inside the
+// table widget of the note's editor, holding only the cell's text.
+function inTableCellEditor(view) {
+  const dom = view.dom;
+  return !!(dom && dom.parentElement && dom.parentElement.closest(".cm-table-widget"));
+}
+
 // Vim isn't in the middle of anything. Insert mode counts as idle, and so does
 // an editor without vim.
 function vimIdle(view) {
@@ -983,8 +990,18 @@ function parseTableRow(text) {
   return { indent: text.slice(0, pipes[0]), pipes, cells, delimiter };
 }
 
+// Whether the table features are on (the tables setting). Off, no line is a
+// table row, so every table key and command does what it does off a table.
+let tablesEnabled = false;
+
 // Line n's table row, or null: { line, indent, pipes, cells, delimiter }.
+// Always null while the tables setting is off.
 function tableRow(doc, n) {
+  return tablesEnabled ? markdownTableRow(doc, n) : null;
+}
+
+// Line n's table row whether or not the tables setting is on.
+function markdownTableRow(doc, n) {
   const text = doc.line(n).text;
   if (!/^\s*\|/.test(text) || scanLines(doc).code[n]) return null;
   const row = parseTableRow(text);
@@ -2195,7 +2212,7 @@ const sameBreaks = (a, b) => a.length === b.length && a.every((r, i) => r.from =
 function isTableBreak(doc, from, to) {
   if (to - from !== 1 || doc.sliceString(from, to) !== "\n") return false;
   const n = doc.lineAt(from).number;
-  return !!(tableRow(doc, n) || (n < doc.lines && tableRow(doc, n + 1)));
+  return !!(markdownTableRow(doc, n) || (n < doc.lines && markdownTableRow(doc, n + 1)));
 }
 
 // Highlight the line breaks of the tables the selection is in, and take the
@@ -2206,13 +2223,15 @@ function isTableBreak(doc, from, to) {
 // Preview they keep the note's font, as the widget does. Markup in them, such
 // as inline code, takes the line's font too: a font of other widths would
 // push the rest of its row out of line with the other rows.
+// The font is a setting extension, on with the tables setting.
+const tableTextFont = EditorView.theme({
+  ".is-live-preview & .cm-line.HyperMD-table-row": { fontFamily: "inherit", fontSize: "inherit" },
+  ".is-live-preview & .cm-line.HyperMD-table-row *": { fontFamily: "inherit", fontSize: "inherit" },
+});
+
 function showTablesAsText(enabled) {
   return [
     tableBreaksField,
-    EditorView.theme({
-      ".is-live-preview & .cm-line.HyperMD-table-row": { fontFamily: "inherit", fontSize: "inherit" },
-      ".is-live-preview & .cm-line.HyperMD-table-row *": { fontFamily: "inherit", fontSize: "inherit" },
-    }),
     EditorState.transactionExtender.of((tr) => {
       const hl = searchHighlight;
       if (!hl) return null;
@@ -2527,7 +2546,7 @@ const uniformHeadings = EditorView.theme({
 });
 
 const DEFAULT_SETTINGS = {
-  indent: false, compactHeadings: false, uniformHeadings: false, hideFoldArrows: false, metaModifier: "alt", enterFollowsLinks: true,
+  tables: false, indent: false, compactHeadings: false, uniformHeadings: false, hideFoldArrows: false, metaModifier: "alt", enterFollowsLinks: true,
 };
 
 class EvilOrgSettingTab extends PluginSettingTab {
@@ -2538,6 +2557,12 @@ class EvilOrgSettingTab extends PluginSettingTab {
 
   display() {
     this.containerEl.empty();
+    new Setting(this.containerEl)
+      .setName("Table editor")
+      .setDesc("Edit Markdown tables as in the org-mode table editor: Tab, Shift-Tab and Enter move between cells and align the table, Meta with h, j, k, l or an arrow moves, deletes and inserts rows and columns, yy, dd, p and P work on rows, i| and a| select cells, a visual block copies and cuts cells, and in Live Preview a table shows as text while Vim's cursor is in it. Off, tables are left to Vim and Obsidian.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.tables)
+        .onChange((on) => this.plugin.setSetting("tables", on)));
     new Setting(this.containerEl)
       .setName("Indent mode")
       .setDesc("Indent the text under each heading by its level, in display only, as org-indent-mode does.")
@@ -2727,11 +2752,8 @@ module.exports = class EvilOrgPlugin extends Plugin {
     Vim.defineMotion("orgElement", elementTextObject);
     mapOnce(Vim, "ae", "motion", "orgElement", {});
     mapOnce(Vim, "ie", "motion", "orgElement", { textObjectInner: true });
-    // `a|`/`i|` shadow Vim Motions' table cell text objects, as `ar`/`ir` do
-    // its row ones. Stock vim has none: `|` alone is the column motion.
     Vim.defineMotion("orgCell", cellTextObject);
-    mapOnce(Vim, "a|", "motion", "orgCell", {});
-    mapOnce(Vim, "i|", "motion", "orgCell", { textObjectInner: true });
+    if (tablesEnabled) this.mapCellTextObjects(Vim);
     // Visual block `y` in a table copies cells.
     this.patchPushText(Vim);
     // `gh` shadows vim's select mode (codemirror-vim has it in some builds,
@@ -2746,6 +2768,16 @@ module.exports = class EvilOrgPlugin extends Plugin {
       mapOnce(Vim, key, "action", "orgOpenLine", { after },
         { isEdit: true, interlaceInsertRepeat: true, context: "normal" });
     }
+  }
+
+  // `a|`/`i|` shadow Vim Motions' table cell text objects, as `ar`/`ir` do
+  // its row ones. Stock vim has none: `|` alone is the column motion. They
+  // are mapped only once the tables setting is on, so that with it off Vim
+  // Motions keeps its own; once mapped they stay, as keymap entries can't be
+  // removed, and with the setting off they select nothing.
+  mapCellTextObjects(Vim) {
+    mapOnce(Vim, "a|", "motion", "orgCell", {});
+    mapOnce(Vim, "i|", "motion", "orgCell", { textObjectInner: true });
   }
 
   // `j` past a closed fold wraps findPosV on the class of the adapter at
@@ -2856,6 +2888,13 @@ module.exports = class EvilOrgPlugin extends Plugin {
   // The editor extensions the settings turn on.
   applySettings() {
     this.settingExtensions.length = 0;
+    tablesEnabled = !!this.settings.tables;
+    if (tablesEnabled) {
+      this.settingExtensions.push(tableTextFont);
+      if (this.patchedVim) guarded(() => this.mapCellTextObjects(this.patchedVim))();
+    } else {
+      this.clearTableBreaks();
+    }
     if (this.settings.indent) this.settingExtensions.push(indentMode);
     if (this.settings.compactHeadings) this.settingExtensions.push(...compactHeadings);
     if (this.settings.uniformHeadings) this.settingExtensions.push(uniformHeadings);
@@ -2868,7 +2907,11 @@ module.exports = class EvilOrgPlugin extends Plugin {
     this.vimRestorers = [];
     this.patchedVim = null;
     this.altMoveVim = null;
-    // Draw the tables shown as text as widgets again.
+    this.clearTableBreaks();
+  }
+
+  // Draw the tables shown as text as widgets again.
+  clearTableBreaks() {
     const hl = searchHighlight;
     if (!hl) return;
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
@@ -2887,7 +2930,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
   // the add buttons are left alone, as are links and other controls in a
   // cell, so Obsidian follows a link, with a modifier key too.
   handleTableClick(e) {
-    if (e.button !== 0 || !this.patchedVim || !searchHighlight) return;
+    if (e.button !== 0 || !tablesEnabled || !this.patchedVim || !searchHighlight) return;
     const target = e.target;
     if (!target || typeof target.closest !== "function") return;
     const cell = target.closest("td, th");
@@ -2917,7 +2960,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
   // keys then reach nothing. Cells are edited as text (see handleTableClick),
   // so give the focus back to the note's editor.
   handleTableFocus(e) {
-    if (!this.patchedVim || !searchHighlight) return;
+    if (!tablesEnabled || !this.patchedVim || !searchHighlight) return;
     const target = e.target;
     if (!target || typeof target.closest !== "function") return;
     const widget = target.closest(".cm-table-widget");
@@ -2947,10 +2990,12 @@ module.exports = class EvilOrgPlugin extends Plugin {
     // In a table, Tab, Shift-Tab and Enter move between cells in normal and
     // insert mode, as org's do in evil's normal and insert states. Elsewhere
     // Tab cycles folds in normal mode only, and the rest is left to vim and
-    // the editor.
+    // the editor. Obsidian gives these extensions to the editor of a Live
+    // Preview table cell too, where Tab and Shift-Tab are left to Obsidian,
+    // which moves between cells: a cell has no folds to cycle.
     const table = (fn) => (view) => (normalMode(view) || insertMode(view)) && fn(view);
-    const tab = (forward, cycle) => guarded((view) => table((v) => tableNextField(v, forward))(view) ||
-      (normalMode(view) && cycle(view)));
+    const tab = (forward, cycle) => guarded((view) => !inTableCellEditor(view) &&
+      (table((v) => tableNextField(v, forward))(view) || (normalMode(view) && cycle(view))));
     this.registerEditorExtension([
       Prec.highest(
         keymap.of([

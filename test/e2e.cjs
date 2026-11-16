@@ -35,7 +35,8 @@ class Plugin {
   registerDomEvent(el, type, fn, options) { el.addEventListener(type, fn, options); }
   addCommand(cmd) { this.commands.push(cmd); }
   addSettingTab() {}
-  async loadData() { return null; }
+  // The tests run with the table editor on; a test of the defaults loads none.
+  async loadData() { return { tables: true }; }
   async saveData() {}
 }
 class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; } }
@@ -338,6 +339,29 @@ test("S-Tab cycles overview -> contents -> show all -> overview", async () => {
   assert.deepEqual(visibleLines(v), [1, 2, 3, 4, 5, 6, 7, 8]);
   await keys(v, "<S-Tab>");
   assert.deepEqual(visibleLines(v), [1]);
+});
+
+test("Tab and S-Tab in a Live Preview table cell's editor are left to Obsidian", async () => {
+  // Obsidian gives a cell's editor the plugin's extensions too, inside the
+  // note's table widget; its own Tab and S-Tab move between the cells.
+  const widget = document.createElement("div");
+  widget.className = "cm-embed-block cm-table-widget";
+  const cell = document.createElement("td");
+  widget.appendChild(cell);
+  document.body.appendChild(widget);
+  const v = new EditorView({
+    parent: cell,
+    state: EditorState.create({ doc: "f", extensions: [vim(), markdown(), codeFolding(), plugin.extensions] }),
+  });
+  try {
+    for (const shiftKey of [false, true]) {
+      const event = new window.KeyboardEvent("keydown", { key: "Tab", shiftKey });
+      assert.equal(runScopeHandlers(v, event, "editor"), false);
+    }
+  } finally {
+    v.destroy();
+    widget.remove();
+  }
 });
 
 test("S-Tab after another command goes to overview", async () => {
@@ -3097,12 +3121,50 @@ function indentSteps(view) {
 }
 
 test("every setting is off by default", async () => {
-  assert.deepEqual(plugin.settings, {
-    indent: false, compactHeadings: false, uniformHeadings: false, hideFoldArrows: false, metaModifier: "alt", enterFollowsLinks: true,
-  });
-  assert.equal(plugin.settingExtensions.length, 0);
+  // Only its settings: Vim and the document keep the test plugin's overrides.
+  const fresh = new PluginClass(app);
+  fresh.loadData = async () => null;
+  fresh.installVimOverrides = () => {};
+  fresh.registerDomEvent = () => {};
+  try {
+    await fresh.onload();
+    assert.deepEqual(fresh.settings, {
+      tables: false, indent: false, compactHeadings: false, uniformHeadings: false, hideFoldArrows: false, metaModifier: "alt", enterFollowsLinks: true,
+    });
+    assert.equal(fresh.settingExtensions.length, 0);
+  } finally {
+    plugin.applySettings();
+  }
+  assert.deepEqual(plugin.settings, { ...plugin.settings, tables: true });
   const v = open(DOC);
   assert.deepEqual(indentSteps(v), [0, 0, 0, 0, 0, 0, 0, 0]);
+});
+
+test("with the table editor off, the table keys do what they do off a table", async () => {
+  await plugin.setSetting("tables", false);
+  try {
+    const doc = "# A\n| a | b |\n|---|---|\n| c | d |\ntext";
+    let v = open(doc);
+    gotoLine(v, 4);
+    await keys(v, "<Tab>");
+    assert.equal(text(v), doc);
+    await keys(v, "<Enter>");
+    assert.equal(cursorLine(v), 5);
+    v = open(doc);
+    gotoLine(v, 4);
+    await keys(v, "dd");
+    assert.equal(text(v), "# A\n| a | b |\n|---|---|\ntext");
+    v = open(doc);
+    gotoLine(v, 2);
+    await keys(v, "o<Esc>");
+    assert.equal(text(v), "# A\n| a | b |\n\n|---|---|\n| c | d |\ntext");
+    v = open(doc + "\n# B\nb");
+    gotoLine(v, 4);
+    await keys(v, "dar");
+    assert.equal(text(v), "# B\nb");
+  } finally {
+    await plugin.setSetting("tables", true);
+  }
 });
 
 test("indent mode indents the lines under a heading to its text, and no heading", async () => {

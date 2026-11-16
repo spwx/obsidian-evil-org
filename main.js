@@ -1993,6 +1993,21 @@ function tableCellEditorAt(target) {
   return { cellView, view, cell, table };
 }
 
+// Tab and Shift-Tab in a Live Preview table cell's editor: the cursor goes to
+// the start of the next cell, or the one before, as Obsidian's own Tab does
+// but without selecting the cell's text. Past the table's last cell or
+// before its first, the key is left to Obsidian, which adds a row after the
+// last.
+function moveToTableCell(view, forward) {
+  const cellEditor = tableCellEditorAt(view.contentDOM);
+  const table = cellEditor && cellEditor.table;
+  if (!table || typeof table.getNextCell !== "function" || typeof table.setCellFocus !== "function") return false;
+  const next = table.getNextCell(cellEditor.cell, forward ? "end" : "start");
+  if (!next) return false;
+  table.setCellFocus(next.row, next.col, () => EditorSelection.single(0));
+  return true;
+}
+
 // Vim.mapCommand, once per engine. Vim tries the newest mapping first, and
 // keymap entries outlive the plugin (see installVimOverrides), so on a reload
 // the entries of the first load are kept in their places, below the
@@ -2305,11 +2320,12 @@ module.exports = class EvilOrgPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on("window-open", (win) => listen(win.doc)));
     // Tab and Shift-Tab cycle folds in Vim normal mode. Obsidian gives these
     // extensions to the editor of a Live Preview table cell too, where they
-    // are left to Obsidian, which moves between cells: a cell has no folds to
-    // cycle.
-    const tab = (cycle) => guarded((view) => !inTableCellEditor(view) && normalMode(view) && cycle(view));
+    // move between the cells instead (see moveToTableCell): a cell has no
+    // folds to cycle.
+    const tab = (cycle, forward) => guarded((view) =>
+      inTableCellEditor(view) ? moveToTableCell(view, forward) : normalMode(view) && cycle(view));
     this.registerEditorExtension([
-      Prec.highest(keymap.of([{ key: "Tab", run: tab(localCycle), shift: tab(globalCycle) }])),
+      Prec.highest(keymap.of([{ key: "Tab", run: tab(localCycle, true), shift: tab(globalCycle, false) }])),
       EditorState.transactionFilter.of((tr) => keepSelectedFoldsClosed(tr, this.app)),
       invertedEffects.of(deletedFolds),
       headingFolds,

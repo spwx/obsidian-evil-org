@@ -314,9 +314,10 @@ test("S-Tab cycles overview -> contents -> show all -> overview", async () => {
   assert.deepEqual(visibleLines(v), [1]);
 });
 
-test("Tab and S-Tab in a Live Preview table cell's editor are left to Obsidian", async () => {
+test("Tab and S-Tab in a Live Preview table cell's editor don't cycle folds", async () => {
   // Obsidian gives a cell's editor the plugin's extensions too, inside the
-  // note's table widget; its own Tab and S-Tab move between the cells.
+  // note's table widget. Without the widget's table to move in, the keys are
+  // left to Obsidian.
   const widget = document.createElement("div");
   widget.className = "cm-embed-block cm-table-widget";
   const cell = document.createElement("td");
@@ -355,6 +356,41 @@ function cellEditorIn(v, tableStart, cellStart, cellText) {
   widget.cmView = { widget: { editor: owner } };
   return { cellView, remove: () => { cellView.destroy(); widget.remove(); } };
 }
+
+test("Tab and S-Tab in a Live Preview table cell's editor move to the next cell without selecting it", async () => {
+  const doc = "| a | bb |\n| - | -- |\n| c | dd |\n";
+  const v = open(doc);
+  const tableStart = doc.indexOf("|");
+  const { cellView, remove } = cellEditorIn(v, tableStart, doc.indexOf("bb") - tableStart, "bb");
+  // A stub of Obsidian's table, with its cells in order, and of the cell
+  // being edited. The table focuses a cell with the selection that sel
+  // makes for the cell's editor, here over the text "xyz".
+  const { tableCell } = cellView.dom.closest(".cm-table-widget").cmView.widget.editor;
+  const cells = [[0, 0], [0, 1], [1, 0], [1, 1]].map(([row, col]) => ({ row, col }));
+  const { table } = tableCell;
+  let focused = null;
+  table.getNextCell = (cell, dir) =>
+    cells[cells.findIndex((c) => c.row === cell.row && c.col === cell.col) + (dir === "end" ? 1 : -1)] || null;
+  table.setCellFocus = (row, col, sel) => {
+    const { anchor, head } = sel({ state: EditorState.create({ doc: "xyz" }) }).main;
+    focused = [row, col, anchor, head];
+  };
+  const tab = (shiftKey) => runScopeHandlers(cellView, new window.KeyboardEvent("keydown", { key: "Tab", shiftKey }), "editor");
+  try {
+    Object.assign(tableCell.cell, cells[1]);
+    assert.equal(tab(false), true);
+    assert.deepEqual(focused, [1, 0, 0, 0]);
+    assert.equal(tab(true), true);
+    assert.deepEqual(focused, [0, 0, 0, 0]);
+    // Past the last cell the key is left to Obsidian, which adds a row.
+    Object.assign(tableCell.cell, cells[3]);
+    focused = null;
+    assert.equal(tab(false), false);
+    assert.equal(focused, null);
+  } finally {
+    remove();
+  }
+});
 
 test("gg, G, C-u, C-d, / and ? in a Live Preview table cell's editor move through the note", async () => {
   const doc = "top\n\n| a | bcd |\n| - | --- |\n| e | f   |\n\nend\nlast";

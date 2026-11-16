@@ -52,6 +52,8 @@ Text before the first heading does not change. If the cursor is in text that bec
 
 In Live Preview, a cell of Obsidian's table editor has a Vim of its own, which operates only in the text of the cell. In Vim normal mode in such a cell, these keys operate in the note instead of in the cell: the cursor goes to the same place in the note, and then the key operates there. A count also operates, for example `5G` goes to line 5 of the note.
 
+`Tab` and `Shift-Tab` in a cell go to the start of the next cell or the previous cell. Unlike Obsidian's own `Tab`, they do not select the text of the cell. `Tab` in the last cell adds a row, as in Obsidian.
+
 ### `Ctrl-d` / `Ctrl-u`: Scroll half a window
 
 `Ctrl-d` scrolls down half the height of the window, and `Ctrl-u` scrolls up half the height of the window. The cursor moves the same distance, so it stays at the same height on the screen. Lines that are taller than the text, for example the rows of a Live Preview table or headings, do not make the scroll longer. With a count, for example `5 Ctrl-d`, the cursor moves that many lines, as in Vim.

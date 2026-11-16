@@ -341,7 +341,15 @@ test("Tab and S-Tab in a Live Preview table cell's editor don't cycle folds", as
 // A Live Preview table cell's editor, with vim, inside a stub of Obsidian's
 // table widget in the note's editor v: the widget knows the note's editor,
 // and that editor its cell editor and the cell's offsets in the table.
+// cellStart is where cellText starts in the table; as in Obsidian, the
+// cell's offsets go from after the pipe before it to the pipe after it, so
+// they take in the spaces around the text.
 function cellEditorIn(v, tableStart, cellStart, cellText) {
+  const doc = v.state.doc.toString();
+  const pipeBefore = doc.lastIndexOf("|", tableStart + cellStart - 1);
+  const pipeAfter = doc.indexOf("|", tableStart + cellStart + cellText.length);
+  const rawStart = pipeBefore < tableStart ? cellStart : pipeBefore + 1 - tableStart;
+  const rawEnd = pipeAfter < 0 ? cellStart + cellText.length : pipeAfter - tableStart;
   const widget = document.createElement("div");
   widget.className = "cm-embed-block cm-table-widget";
   const td = document.createElement("td");
@@ -352,7 +360,7 @@ function cellEditorIn(v, tableStart, cellStart, cellText) {
     parent: td,
     state: EditorState.create({ doc: cellText, extensions: [vim(), markdown(), plugin.extensions] }),
   });
-  const owner = { cm: v, tableCell: { cm: cellView, table: { start: tableStart }, cell: { start: cellStart, end: cellStart + cellText.length } } };
+  const owner = { cm: v, tableCell: { cm: cellView, table: { start: tableStart }, cell: { start: rawStart, end: rawEnd } } };
   widget.cmView = { widget: { editor: owner } };
   return { cellView, remove: () => { cellView.destroy(); widget.remove(); } };
 }
@@ -420,22 +428,134 @@ test("gg, G, C-u, C-d, / and ? in a Live Preview table cell's editor move throug
       remove();
     }
   }
-  // C-d starts from the cell's place in the note.
-  for (const [key, opts] of [["d", { ctrlKey: true }], ["u", { ctrlKey: true }], ["/", {}], ["?", { shiftKey: true }]]) {
+  // Each key starts from the cell's place in the note, after the keys pending
+  // in the cell.
+  const ctrl = { ctrlKey: true };
+  for (const [pendingKeys, key, opts] of [
+    [[], "d", ctrl], [[], "u", ctrl], [[], "f", ctrl], [[], "b", ctrl], [["2"], "f", ctrl],
+    [[], "o", ctrl], [[], "i", ctrl], [["3"], "o", ctrl],
+    [[], "/", {}], [[], "?", { shiftKey: true }], [[], "n", {}], [[], "N", { shiftKey: true }], [["2"], "n", {}],
+    [[], "*", { shiftKey: true }], [[], "#", { shiftKey: true }], [["g"], "*", { shiftKey: true }], [["g"], "#", { shiftKey: true }],
+    [[], "'", {}], [[], "`", {}],
+  ]) {
+    const name = pendingKeys.join("") + (opts.ctrlKey ? `C-${key}` : key);
     const v = open(doc);
     const { cellView, remove } = cellEditorIn(v, tableStart, cellStart, "bcd");
     const seen = [];
     const stock = Vim.handleKey;
-    Vim.handleKey = (cm, k, origin) => (cm === getCM(v) && seen.push([k, cm.cm6.state.selection.main.head]), stock.call(Vim, cm, k, origin));
     try {
       cellView.dispatch({ selection: { anchor: 2 } });
-      assert.ok(keydown(cellView.contentDOM, key, opts).defaultPrevented, key);
+      for (const k of pendingKeys) Vim.handleKey(getCM(cellView), k, "user");
+      Vim.handleKey = (cm, k, origin) => (cm === getCM(v) && seen.push([k, cm.cm6.state.selection.main.head]), stock.call(Vim, cm, k, origin));
+      assert.ok(keydown(cellView.contentDOM, key, opts).defaultPrevented, name);
       const vimKey = opts.ctrlKey ? `<C-${key}>` : key;
-      assert.deepEqual(seen, [[vimKey, doc.indexOf("bcd") + 2]]);
+      assert.deepEqual(seen.map(([k]) => k), [...pendingKeys, vimKey], name);
+      assert.equal(seen[0][1], doc.indexOf("bcd") + 2, name);
+      assert.equal(getCM(cellView).state.vim.inputState.keyBuffer.length, 0, name);
     } finally {
       Vim.handleKey = stock;
       remove();
     }
+  }
+  // Keys of the cell's own: motions in the cell, a key after an operator, a
+  // mark with a count, C-S-o.
+  for (const [pendingKeys, key, opts] of [[[], "w", {}], [["d"], "n", {}], [["2"], "'", {}], [[], "O", { ctrlKey: true, shiftKey: true }]]) {
+    const v = open(doc);
+    const { cellView, remove } = cellEditorIn(v, tableStart, cellStart, "bcd");
+    const seen = [];
+    const stock = Vim.handleKey;
+    try {
+      for (const k of pendingKeys) Vim.handleKey(getCM(cellView), k, "user");
+      Vim.handleKey = (cm, k, origin) => (cm === getCM(v) && seen.push(k), stock.call(Vim, cm, k, origin));
+      keydown(cellView.contentDOM, key, opts);
+      assert.deepEqual(seen, [], pendingKeys.join("") + key);
+      assert.equal(v.state.selection.main.head, 0, pendingKeys.join("") + key);
+    } finally {
+      Vim.handleKey = stock;
+      remove();
+    }
+  }
+});
+
+test("n, g* and C-o in a Live Preview table cell's editor use the note's search and jump list", async () => {
+  const doc = "top\n\n| a | bcd |\n| - | --- |\n| e | f   |\n\nbcd end\nlast";
+  const tableStart = doc.indexOf("|");
+  const cellStart = doc.indexOf("bcd") - tableStart;
+  const cellPlace = doc.indexOf("bcd") + 1;
+  const keydown = (el, key, opts = {}) => el.dispatchEvent(new window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...opts }));
+  const enter = (v, cellView) => {
+    v.dispatch({ selection: { anchor: 0 } });
+    cellView.dispatch({ selection: { anchor: 1 } });
+  };
+  // A search made in the note (* on 'end'), then n in the cell: the next match after the cell.
+  let v = open(doc);
+  let { cellView, remove } = cellEditorIn(v, tableStart, cellStart, "bcd");
+  try {
+    v.dispatch({ selection: { anchor: doc.indexOf("end") } });
+    await keys(v, "*");
+    enter(v, cellView);
+    keydown(cellView.contentDOM, "n");
+    assert.equal(v.state.selection.main.head, doc.indexOf("end"));
+  } finally {
+    remove();
+  }
+  // n with the cell's cursor on a match: the next match, not the same one.
+  v = open(doc);
+  ({ cellView, remove } = cellEditorIn(v, tableStart, cellStart, "bcd"));
+  try {
+    v.dispatch({ selection: { anchor: doc.indexOf("bcd end") } });
+    await keys(v, "*");
+    v.dispatch({ selection: { anchor: 0 } });
+    cellView.dispatch({ selection: { anchor: 0 } });
+    keydown(cellView.contentDOM, "n");
+    assert.equal(v.state.selection.main.head, doc.indexOf("bcd end"));
+  } finally {
+    remove();
+  }
+  // g* finds the cell's word later in the note, but not the "bcd" in "abcd".
+  v = open(doc.replace("top", "abcd"));
+  ({ cellView, remove } = cellEditorIn(v, tableStart + 1, cellStart, "bcd"));
+  try {
+    enter(v, cellView);
+    Vim.handleKey(getCM(cellView), "g", "user");
+    keydown(cellView.contentDOM, "*", { shiftKey: true });
+    assert.equal(v.state.selection.main.head, v.state.doc.toString().indexOf("bcd end"));
+  } finally {
+    remove();
+  }
+  // G from the cell, then C-o: back to the cell's place.
+  v = open(doc);
+  ({ cellView, remove } = cellEditorIn(v, tableStart, cellStart, "bcd"));
+  try {
+    enter(v, cellView);
+    keydown(cellView.contentDOM, "G", { shiftKey: true });
+    assert.equal(v.state.doc.lineAt(v.state.selection.main.head).number, v.state.doc.lines);
+    await keys(v, "<C-o>");
+    assert.equal(v.state.selection.main.head, cellPlace);
+  } finally {
+    remove();
+  }
+});
+
+test("m in a Live Preview table cell's editor sets the note's mark and keeps the cell", async () => {
+  const doc = "top\n\n| a | bcd |\n| - | --- |\n\nend";
+  const tableStart = doc.indexOf("|");
+  const cellStart = doc.indexOf("bcd") - tableStart;
+  const v = open(doc);
+  const { cellView, remove } = cellEditorIn(v, tableStart, cellStart, "bcd");
+  try {
+    cellView.dispatch({ selection: { anchor: 2 } });
+    Vim.handleKey(getCM(cellView), "m", "user");
+    const event = new window.KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true });
+    cellView.contentDOM.dispatchEvent(event);
+    assert.ok(event.defaultPrevented);
+    assert.equal(getCM(cellView).state.vim.inputState.keyBuffer.length, 0);
+    assert.equal(cellView.state.selection.main.head, 2);
+    assert.equal(getCM(cellView).state.vim.marks.a, undefined);
+    await keys(v, "G`a");
+    assert.equal(v.state.selection.main.head, doc.indexOf("bcd") + 2);
+  } finally {
+    remove();
   }
 });
 

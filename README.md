@@ -48,9 +48,23 @@ Folded list items and code blocks in the subtree stay folded. On a block that is
 
 Text before the first heading does not change. If the cursor is in text that becomes folded, the cursor moves to the visible line above it.
 
-### `gg`, `G`, `Ctrl-u`, `Ctrl-d`, `/`, and `?` in a table cell
+### Note keys in a table cell
 
-In Live Preview, a cell of Obsidian's table editor has a Vim of its own, which operates only in the text of the cell. In Vim normal mode in such a cell, these keys operate in the note instead of in the cell: the cursor goes to the same place in the note, and then the key operates there. A count also operates, for example `5G` goes to line 5 of the note.
+In Live Preview, a cell of Obsidian's table editor has a Vim of its own, which operates only in the text of the cell. In Vim normal mode in such a cell, these keys operate in the note instead of in the cell:
+
+| Key | Operation in the note |
+| --- | --- |
+| `gg`, `G` | Go to the first line, the last line, or a line number |
+| `Ctrl-d`, `Ctrl-u`, `Ctrl-f`, `Ctrl-b` | Scroll half a window or a full window |
+| `/`, `?` | Search |
+| `n`, `N` | Go to the next or the previous match of the last search |
+| `*`, `#`, `g*`, `g#` | Search for the word at the cursor |
+| `Ctrl-o`, `Ctrl-i` | Go back or forward in the jump list |
+| `'` and a letter, `` ` `` and a letter | Go to a mark |
+
+The cursor goes to the same place in the note, and then the key operates there. A count also operates, for example `5G` goes to line 5 of the note. When a key moves the cursor from a cell, the jump list keeps the place of the cell. Thus, `Ctrl-o` goes back to the cell.
+
+`m` and a letter in a cell set a mark in the note, at the place of the cell. The cursor stays in the cell. Use `'` or `` ` `` with the letter to go back to the mark from all of the note.
 
 `Tab` and `Shift-Tab` in a cell go to the start of the next cell or the previous cell. Unlike Obsidian's own `Tab`, they do not select the text of the cell. `Tab` in the last cell adds a row, as in Obsidian.
 

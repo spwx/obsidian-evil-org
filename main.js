@@ -1976,6 +1976,18 @@ const CELL_MOVE_COMMANDS = {
   h: "editor:table-col-left", j: "editor:table-row-down", k: "editor:table-row-up", l: "editor:table-col-right",
 };
 
+// The keys that operate in the note from a Live Preview table cell's editor
+// (see handleCellEscape), by vim's name for the key, each with the keys that
+// can be pending in the cell before it: a count, or the `g` of `gg` and `g*`.
+// The keys go through the whole note, or use what vim keeps for the note's
+// editor only: its jump list, search and marks.
+const COUNT = /^\d*$/;
+const CELL_NOTE_KEYS = {
+  g: /^\d*g$/, G: COUNT, "<C-d>": COUNT, "<C-u>": COUNT, "<C-f>": COUNT, "<C-b>": COUNT,
+  "/": COUNT, "?": COUNT, n: COUNT, N: COUNT, "*": /^\d*g?$/, "#": /^\d*g?$/,
+  "<C-o>": COUNT, "<C-i>": COUNT, "'": /^$/, "`": /^$/,
+};
+
 // The editor of a Live Preview table cell whose content is target, or null:
 // { cellView, view, cell, table }, with view the note's editor and cell's
 // offsets relative to table.start.
@@ -2236,10 +2248,11 @@ module.exports = class EvilOrgPlugin extends Plugin {
   }
 
   // In the editor of a Live Preview table cell, which has a vim of its own
-  // over the cell's text, the keys that move through the whole note (`gg`,
-  // `G`, `Ctrl-u`, `Ctrl-d`, `/` and `?`) move through the note instead: the
-  // note's editor takes the cursor, at the cell's, and the focus, and vim
-  // gets the keys there, with any count pending in the cell.
+  // over the cell's text, the keys of CELL_NOTE_KEYS operate in the note
+  // instead: the note's editor takes the cursor, at the cell's, and the
+  // focus, and vim gets there the keys pending in the cell and then the key.
+  // A mark set in the cell (`m` and a letter) goes to the note's vim, at the
+  // cell's place, and the focus stays in the cell.
   handleCellEscape(e) {
     if (e.altKey || e.metaKey || e.isComposing) return;
     const Vim = this.patchedVim;
@@ -2247,26 +2260,33 @@ module.exports = class EvilOrgPlugin extends Plugin {
     if (!cellEditor) return;
     const { cellView, view, cell, table } = cellEditor;
     const cellVim = getVimState(cellView);
-    if (!cellVim || !getVimState(view) || cellVim.insertMode || cellVim.visualMode || cellVim.inputState.operator) return;
+    const noteVim = getVimState(view);
+    if (!cellVim || !noteVim || cellVim.insertMode || cellVim.visualMode) return;
+    if (cellVim.inputState.operator) return;
     const pending = cellVim.inputState.keyBuffer.join("");
-    let vimKey = null;
-    if (e.ctrlKey) {
-      if (!e.shiftKey && (e.key === "u" || e.key === "d")) vimKey = `<C-${e.key}>`;
-    } else if (e.key === "g" && /^\d*g$/.test(pending)) {
-      vimKey = "gg";
-    } else if ((e.key === "G" || e.key === "/" || e.key === "?") && /^\d*$/.test(pending)) {
-      vimKey = e.key;
-    }
-    if (!vimKey || (vimKey !== "gg" && !/^\d*$/.test(pending))) return;
+    const mark = !e.ctrlKey && pending === "m" && /^[a-zA-Z]$/.test(e.key);
+    const vimKey = e.ctrlKey ? (e.shiftKey ? null : `<C-${e.key}>`) : e.key;
+    const pendingRe = CELL_NOTE_KEYS[vimKey];
+    if (!mark && !(pendingRe && pendingRe.test(pending))) return;
     e.preventDefault();
     e.stopPropagation();
-    const count = pending.replace(/g$/, "");
     if (pending) Vim.handleKey(cellView.cm, "<Esc>", "user");
-    const from = table.start + cell.start;
-    const head = Math.min(from + cellView.state.selection.main.head, table.start + cell.end);
-    view.dispatch({ selection: { anchor: Math.min(head, view.state.doc.length) }, userEvent: "select" });
+    // The cell's offsets in the note take in the spaces around its text, and
+    // the cell's editor has the text only.
+    const to = Math.min(table.start + cell.end, view.state.doc.length);
+    const from = Math.min(table.start + cell.start, to);
+    const raw = view.state.doc.sliceString(from, to);
+    const head = Math.min(from + raw.length - raw.trimStart().length + cellView.state.selection.main.head, to);
+    if (mark) {
+      // As vim's own `m`: a bookmark in the note's editor, in place of the old.
+      const noteCm = view.cm;
+      if (noteVim.marks[e.key]) noteVim.marks[e.key].clear();
+      noteVim.marks[e.key] = noteCm.setBookmark(noteCm.posFromIndex(head));
+      return;
+    }
+    view.dispatch({ selection: { anchor: head }, userEvent: "select" });
     view.focus();
-    for (const k of [...count, ...(vimKey === "gg" ? ["g", "g"] : [vimKey])]) Vim.handleKey(view.cm, k, "user");
+    for (const k of [...pending, vimKey]) Vim.handleKey(view.cm, k, "user");
   }
 
   // Follow the link, or tag, at the cursor of the active note. Returns false

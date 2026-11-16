@@ -9,7 +9,7 @@ const { JSDOM } = require("jsdom");
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 const g = globalThis;
-for (const k of ["window", "document", "Window", "Node", "HTMLElement", "MutationObserver", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"]) {
+for (const k of ["window", "document", "Window", "Node", "HTMLElement", "MutationObserver", "Text", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"]) {
   if (!(k in g) || k === "window" || k === "document") g[k] = dom.window[k];
 }
 Object.defineProperty(g, "navigator", { value: dom.window.navigator, configurable: true });
@@ -570,6 +570,72 @@ test("G in a Live Preview table cell's editor in insert mode stays in the cell",
     assert.ok(getCM(cellView).state.vim.insertMode);
   } finally {
     remove();
+  }
+});
+
+test("vim's search highlights its matches in a Live Preview table widget's cells", async () => {
+  // jsdom has no CSS Custom Highlight API: a stub of the registry and of
+  // Highlight, a set of ranges, as in the browser.
+  window.CSS = { highlights: new Map() };
+  window.Highlight = class extends Set {};
+  // Obsidian's table widget: a block widget of rendered cells.
+  class TableWidget extends WidgetType {
+    toDOM() {
+      const el = document.createElement("div");
+      el.className = "cm-embed-block cm-table-widget";
+      el.innerHTML = "<table><tr><td><div class=\"table-cell-wrapper\">foo <b>fo</b>o</div></td>" +
+        "<td><div class=\"table-cell-wrapper\">bar</div></td></tr></table>";
+      return el;
+    }
+  }
+  const doc = "foo\n\n| foo **fo**o | bar |\n| - | - |\n\nend";
+  const from = doc.indexOf("|");
+  const to = doc.indexOf("\n\nend");
+  const widget = StateField.define({
+    create: () => Decoration.set([Decoration.replace({ widget: new TableWidget(), block: true }).range(from, to)]),
+    update: (d) => d,
+    provide: (f) => EditorView.decorations.from(f),
+  });
+  const hl = () => [...(window.CSS.highlights.get("evil-org-search") || [])].map((r) => r.toString());
+  // Vim sets its highlight 50ms after a search, and the plugin follows it in
+  // the next measure.
+  const measured = () => new Promise((r) => setTimeout(() => requestAnimationFrame(() => setTimeout(r, 0)), 80));
+  try {
+    const v = open(doc, [widget]);
+    await keys(v, "*");
+    await measured();
+    assert.deepEqual(hl(), ["foo", "foo"]);
+    Vim.handleEx(getCM(v), "nohlsearch");
+    await measured();
+    assert.deepEqual(hl(), []);
+    // Esc in a cell's editor takes the highlight away too.
+    await keys(v, "*");
+    await measured();
+    assert.deepEqual(hl(), ["foo", "foo"]);
+    const { cellView, remove } = cellEditorIn(v, from, 2, "foo **fo**o");
+    try {
+      const esc = new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+      cellView.contentDOM.dispatchEvent(esc);
+      assert.ok(!esc.defaultPrevented);
+    } finally {
+      remove();
+    }
+    await measured();
+    assert.deepEqual(hl(), []);
+    assert.equal(getCM(v).state.vim.searchState_.getOverlay(), null);
+    v.dispatch({ selection: { anchor: doc.indexOf("end") } });
+    await keys(v, "*");
+    await measured();
+    assert.deepEqual(hl(), []);
+    v.dispatch({ selection: { anchor: 0 } });
+    await keys(v, "*");
+    await measured();
+    v.destroy();
+    activeView = null;
+    assert.deepEqual(hl(), []);
+  } finally {
+    delete window.CSS;
+    delete window.Highlight;
   }
 });
 

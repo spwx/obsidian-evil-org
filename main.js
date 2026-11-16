@@ -655,6 +655,107 @@ function tableWidgetRowOf(table, n) {
   return i;
 }
 
+// Vim highlights its search's matches with decorations of the note's editor,
+// which don't reach into the widget Live Preview draws a table as: its cells
+// are rendered HTML, or an editor of their own while one is edited. The
+// matches in a table widget's cells are highlighted with the CSS Custom
+// Highlight API instead, which marks text without changing the DOM, so it
+// disturbs neither the widget nor a cell's editor. Each editor puts its
+// ranges in its window's highlight, which every editor of the window shares.
+const SEARCH_HIGHLIGHT = "evil-org-search";
+
+// The query of vim's search while vim highlights it (`:nohlsearch` and Esc
+// take the highlight away), or null.
+function highlightedSearch(view) {
+  const v = getVimState(view);
+  const search = v && v.searchState_;
+  return (search && search.getOverlay() && search.getQuery()) || null;
+}
+
+// The ranges of the matches of query in the text of each table widget cell
+// of view.
+function tableSearchRanges(view, query) {
+  const doc = view.contentDOM.ownerDocument;
+  const re = new RegExp(query.source, query.flags.replace(/[gy]/g, "") + "g");
+  const ranges = [];
+  for (const cell of view.contentDOM.querySelectorAll(".cm-table-widget .table-cell-wrapper")) {
+    // The cell's text nodes, each with its offset in the cell's text.
+    const nodes = [];
+    let text = "";
+    const walker = doc.createTreeWalker(cell, 4 /* NodeFilter.SHOW_TEXT */);
+    for (let node; (node = walker.nextNode());) {
+      nodes.push({ node, at: text.length });
+      text += node.data;
+    }
+    // The node and the offset in it of offset in the text: the node it
+    // starts, for a range's start, or ends, for its end.
+    const point = (offset, end) => {
+      const i = nodes.findIndex(({ node, at }) => end ? offset <= at + node.length : offset < at + node.length);
+      const { node, at } = nodes[i < 0 ? nodes.length - 1 : i];
+      return [node, offset - at];
+    };
+    for (const m of text.matchAll(re)) {
+      if (!m[0]) continue;
+      const range = doc.createRange();
+      range.setStart(...point(m.index, false));
+      range.setEnd(...point(m.index + m[0].length, true));
+      ranges.push(range);
+    }
+  }
+  return ranges;
+}
+
+const tableSearchHighlight = [
+  // Obsidian's colors for the matches of its search in the editor.
+  EditorView.theme({
+    [`& .cm-table-widget ::highlight(${SEARCH_HIGHLIGHT})`]: { backgroundColor: "var(--text-highlight-bg)" },
+    [`.theme-dark & .cm-table-widget ::highlight(${SEARCH_HIGHLIGHT})`]: { backgroundColor: "rgba(132, 112, 32, 0.6)" },
+  }),
+  ViewPlugin.fromClass(class {
+    constructor(view) {
+      this.view = view;
+      this.ranges = [];
+      // After the update that draws the widgets, and after vim has set or
+      // cleared its highlight: vim clears it after the transaction it
+      // dispatches for that.
+      this.measure = { read: () => null, write: () => this.destroyed || this.refresh() };
+      view.requestMeasure(this.measure);
+    }
+
+    // The window's highlight, made the first time it's needed.
+    highlight(make) {
+      const win = this.view.contentDOM.ownerDocument.defaultView;
+      const registry = win && win.CSS && win.CSS.highlights;
+      if (!registry || typeof win.Highlight !== "function") return null;
+      let hl = registry.get(SEARCH_HIGHLIGHT);
+      if (!hl && make) registry.set(SEARCH_HIGHLIGHT, (hl = new win.Highlight()));
+      return hl || null;
+    }
+
+    refresh() {
+      const query = highlightedSearch(this.view);
+      const ranges = query ? tableSearchRanges(this.view, query) : [];
+      if (!ranges.length && !this.ranges.length) return;
+      const hl = this.highlight(true);
+      if (!hl) return;
+      for (const r of this.ranges) hl.delete(r);
+      for (const r of ranges) hl.add(r);
+      this.ranges = ranges;
+    }
+
+    update() {
+      this.view.requestMeasure(this.measure);
+    }
+
+    destroy() {
+      this.destroyed = true;
+      const hl = this.highlight(false);
+      if (hl) for (const r of this.ranges) hl.delete(r);
+      this.ranges = [];
+    }
+  }),
+];
+
 const firstNonBlank = (text) => text.length - text.trimStart().length;
 
 const posBefore = (a, b) => a.line < b.line || (a.line === b.line && a.ch < b.ch);
@@ -2262,6 +2363,17 @@ module.exports = class EvilOrgPlugin extends Plugin {
     const cellVim = getVimState(cellView);
     const noteVim = getVimState(view);
     if (!cellVim || !noteVim || cellVim.insertMode || cellVim.visualMode) return;
+    // Esc takes the note's search highlight away, as it does in the note,
+    // and still goes to the cell's vim, which clears the keys pending there.
+    if (e.key === "Escape" && !e.ctrlKey) {
+      const search = noteVim.searchState_;
+      const overlay = search && search.getOverlay();
+      if (overlay) {
+        view.cm.removeOverlay(overlay);
+        search.setOverlay(null);
+      }
+      return;
+    }
     if (cellVim.inputState.operator) return;
     const pending = cellVim.inputState.keyBuffer.join("");
     const mark = !e.ctrlKey && pending === "m" && /^[a-zA-Z]$/.test(e.key);
@@ -2350,6 +2462,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
       invertedEffects.of(deletedFolds),
       headingFolds,
       codeBlockFolds,
+      tableSearchHighlight,
       EditorView.updateListener.of((update) => {
         // An editor that opened without a leaf change, as in a pop-out or an
         // embed, may bring an adapter class not yet patched. Only while the

@@ -152,7 +152,7 @@ Off a table, `Alt-h` and `Alt-l` do what they did without the plugin.
 ### `Enter`: Follow a link or toggle a checkbox
 
 - On a link or a tag, `Enter` follows it (`org-return-follows-link`), as **Follow link under cursor** does.
-- In a list item that has a checkbox, `Enter` checks the checkbox (`org-toggle-checkbox`). If the checkbox is already marked, as in `[x]` or `[/]`, `Enter` clears it. The cursor can be on any line of the item.
+- In a list item that has a checkbox, `Enter` checks the checkbox (`org-toggle-checkbox`). If the checkbox is already marked, as in `[x]` or `[/]`, `Enter` clears it. The cursor can be on any line of the item. If the [Tasks](https://github.com/obsidian-tasks-group/obsidian-tasks) plugin is enabled, `Enter` runs its **Toggle task done** command instead, so it adds done dates, creates the next recurring task, and follows your custom statuses.
 
 At all other locations, and with a count, `Enter` operates as in Vim. One `u` undoes one toggle.
 

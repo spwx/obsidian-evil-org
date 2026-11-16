@@ -1827,6 +1827,43 @@ test("Enter in a list item with a checkbox checks it, or unchecks it", async () 
   assert.deepEqual(executed, []);
 });
 
+test("with the Tasks plugin, Enter in a task runs its Toggle task done on the item's line", async () => {
+  const id = "obsidian-tasks-plugin:toggle-done";
+  const orig = app.commands.executeCommandById;
+  const lines = [];
+  app.commands.commands = { [id]: {} };
+  // As Tasks does, by default, for a recurring task: add the next one above
+  // the cursor's line.
+  app.commands.executeCommandById = (cmd) => {
+    executed.push(cmd);
+    const view = activeView;
+    const line = view.state.doc.lineAt(view.state.selection.main.head);
+    lines.push(line.number);
+    view.dispatch({ changes: { from: line.from, insert: "- [ ] next\n" } });
+    return true;
+  };
+  try {
+    const v = open("- [ ] a\n  more\n- d\n```\n- [ ] e\n```");
+    executed.length = 0;
+    await keys(v, "<Enter>");
+    gotoLine(v, 3);
+    await keys(v, "l");
+    const [, col] = cursorAt(v);
+    await keys(v, "<Enter>");
+    assert.deepEqual(cursorAt(v), [4, col]);
+    for (const n of [5, 7]) {
+      gotoLine(v, n);
+      await keys(v, "<Enter>");
+    }
+    assert.deepEqual(executed, [id, id]);
+    assert.deepEqual(lines, [1, 2]);
+    assert.equal(text(v), "- [ ] next\n- [ ] next\n- [ ] a\n  more\n- d\n```\n- [ ] e\n```");
+  } finally {
+    delete app.commands.commands;
+    app.commands.executeCommandById = orig;
+  }
+});
+
 test("with the Enter setting off, Enter on a link or a checkbox is vim's", async () => {
   await plugin.setSetting("enterFollowsLinks", false);
   try {

@@ -1721,17 +1721,29 @@ function openLine(cm, args, vim) {
 // item the cursor is in, or uncheck it if it has any mark. Returns false,
 // changing nothing, outside an item with a checkbox, and in a code block.
 function toggleTask(view) {
-  const state = view.state;
-  const doc = state.doc;
-  const n = doc.lineAt(state.selection.main.head).number;
-  const item = !scanLines(doc).code[n] && enclosingItem(doc, n);
-  if (!item || !item.checkbox) return false;
-  const line = doc.line(item.line);
+  const item = taskItem(view);
+  if (!item) return false;
+  const line = view.state.doc.line(item.line);
   const m = line.text.match(ITEM_RE);
   const from = line.from + m[0].length - 2;
   view.dispatch({ changes: { from, to: from + 1, insert: m[5] === "[ ]" ? "x" : " " }, userEvent: "input" });
   return true;
 }
+
+// The list item with a checkbox that the cursor is in, or null, as
+// toggleTask finds it.
+function taskItem(view) {
+  const state = view.state;
+  const doc = state.doc;
+  const n = doc.lineAt(state.selection.main.head).number;
+  const item = !scanLines(doc).code[n] && enclosingItem(doc, n);
+  return item && item.checkbox ? item : null;
+}
+
+// Where the Tasks plugin is enabled, its Toggle task done command, so that
+// Enter on a task does what it does there: done dates, recurrence, custom
+// statuses.
+const TASKS_TOGGLE_DONE = "obsidian-tasks-plugin:toggle-done";
 
 // org-insert-heading-respect-content (M-RET) and, with deeper, a subheading:
 // open a heading after the subtree the cursor is in, at the same level or one
@@ -2049,7 +2061,7 @@ class EvilOrgSettingTab extends PluginSettingTab {
         .onChange((on) => this.plugin.setSetting("hideFoldArrows", on)));
     new Setting(this.containerEl)
       .setName("Enter follows links and toggles checkboxes")
-      .setDesc("In Vim normal mode, Enter on a link follows it, and Enter in a list item with a checkbox checks or clears it. Elsewhere Enter is Vim's.")
+      .setDesc("In Vim normal mode, Enter on a link follows it, and Enter in a list item with a checkbox checks or clears it, with the Tasks plugin's Toggle task done if it is enabled. Elsewhere Enter is Vim's.")
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.enterFollowsLinks)
         .onChange((on) => this.plugin.setSetting("enterFollowsLinks", on)));
@@ -2343,7 +2355,7 @@ module.exports = class EvilOrgPlugin extends Plugin {
     if (e.key !== "Enter" || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) return;
     const view = activeEditorView(this.app);
     if (!view || e.target !== view.contentDOM || !normalMode(view)) return;
-    if (!this.settings.enterFollowsLinks || !(guarded(() => this.followLink())() || guarded(toggleTask)(view))) return;
+    if (!this.settings.enterFollowsLinks || !(guarded(() => this.followLink())() || guarded(() => this.toggleTask(view))())) return;
     e.preventDefault();
     e.stopPropagation();
   }
@@ -2399,6 +2411,30 @@ module.exports = class EvilOrgPlugin extends Plugin {
     view.dispatch({ selection: { anchor: head }, userEvent: "select" });
     view.focus();
     for (const k of [...pending, vimKey]) Vim.handleKey(view.cm, k, "user");
+  }
+
+  // Toggle the checkbox of the item the cursor is in, with the Tasks
+  // plugin's Toggle task done where it is enabled, else with toggleTask.
+  // Tasks toggles the cursor's line, so the cursor goes to the item's line
+  // for it, and then back: Tasks changes only that line and maybe adds one
+  // next to it, all before the cursor, so its distance from the end of the
+  // note stays. Returns false outside an item with a checkbox.
+  toggleTask(view) {
+    const item = taskItem(view);
+    if (!item) return false;
+    const commands = this.app.commands;
+    if (!commands.commands || !commands.commands[TASKS_TOGGLE_DONE]) return toggleTask(view);
+    const head = view.state.selection.main.head;
+    const line = view.state.doc.line(item.line);
+    const fromEnd = view.state.doc.length - head;
+    const moved = head < line.from || head > line.to;
+    if (moved) view.dispatch({ selection: { anchor: line.to } });
+    if (!commands.executeCommandById(TASKS_TOGGLE_DONE)) {
+      if (moved) view.dispatch({ selection: { anchor: head } });
+      return toggleTask(view);
+    }
+    if (moved) view.dispatch({ selection: { anchor: Math.max(0, view.state.doc.length - fromEnd) } });
+    return true;
   }
 
   // Follow the link, or tag, at the cursor of the active note. Returns false
